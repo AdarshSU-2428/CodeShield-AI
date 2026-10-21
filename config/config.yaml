@@ -1,0 +1,78 @@
+app:
+  name: "CodeShield AI"
+  version: "0.1.0"
+  port: 8000
+  host: "127.0.0.1"
+
+
+scanner:
+  max_file_size_bytes: 1048576
+
+  supported_extensions:
+    python:
+      - ".py"
+    javascript:
+      - ".js"
+      - ".jsx"
+      - ".mjs"
+    java:
+      - ".java"
+    c:
+      - ".c"
+      - ".h"
+    cpp:
+      - ".cpp"
+      - ".cc"
+      - ".cxx"
+      - ".hpp"
+
+  ignore_directories:
+    - ".git"
+    - ".svn"
+    - ".hg"
+    - "node_modules"
+    - "venv"
+    - ".venv"
+    - "env"
+    - ".env"
+    - "__pycache__"
+    - ".pytest_cache"
+    - "build"
+    - "dist"
+    - "out"
+    - "target"
+    - ".idea"
+    - ".vscode"
+
+  ignore_patterns:
+    - "*.min.js"
+    - "*.bundle.js"
+    - "*.pyc"
+    - "*.pyo"
+    - "*.class"
+    - "*.o"
+    - "*.obj"
+    - "*.so"
+    - "*.dll"
+    - "*.exe"
+    - "package-lock.json"
+    - "yarn.lock"
+
+
+rag:
+  chunk_size_lines: 50
+  chunk_overlap_lines: 10
+  top_k: 5
+  similarity_threshold: 0.7
+  vector_store_path: "data/vector_store"
+
+
+llm:
+  default_provider: "groq"
+  default_model: "llama-3.3-70b-versatile"
+  max_context_tokens: 4000
+  temperature: 0.1
+
+
+patch:
+  backup_dir: "data/backups"
