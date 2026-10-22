@@ -95,6 +95,36 @@ class AppConfig:
         """Return maximum allowed file size in bytes."""
         return self._max_file_size
 
+    @property
+    def llm_default_provider(self) -> str:
+        """Return the default LLM provider name."""
+        return str(self._raw_config.get("llm", {}).get("default_provider", "groq"))
+
+    @property
+    def llm_default_model(self) -> str:
+        """Return default model name from configuration."""
+        return str(self._raw_config.get("llm", {}).get("default_model", "llama-3.3-70b-versatile"))
+
+    @property
+    def llm_max_context_tokens(self) -> int:
+        """Return maximum context token limit."""
+        return int(self._raw_config.get("llm", {}).get("max_context_tokens", 4000))
+
+    @property
+    def llm_temperature(self) -> float:
+        """Return default sampling temperature."""
+        return float(self._raw_config.get("llm", {}).get("temperature", 0.1))
+
+    @property
+    def llm_fallback_model(self) -> str:
+        """Return fallback model name from configuration."""
+        return str(self._raw_config.get("llm", {}).get("fallback_model", "llama-3.1-8b-instant"))
+
+    @property
+    def llm_fallback_max_tokens(self) -> int:
+        """Return fallback context token limit."""
+        return int(self._raw_config.get("llm", {}).get("fallback_max_tokens", 2048))
+
 
 # Singleton global config instance for convenience
 config = AppConfig()

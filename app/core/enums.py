@@ -26,6 +26,12 @@ class Severity(str, Enum):
     LOW = "low"
     INFO = "info"
 
+class Confidence(str, Enum):
+    """Confidence score of an audit finding."""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
 class FindingCategory(str, Enum):
     """Broad categories for detected audit issues."""
     SECURITY = "security"
@@ -33,9 +39,18 @@ class FindingCategory(str, Enum):
     ARCHITECTURE = "architecture"
     LOGIC = "logic"
 
+class JobStatus(str, Enum):
+    """Lifecycle states of an analysis audit job."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
 class PatchStatus(str, Enum):
     """Lifecycle states of a proposed code patch."""
     PROPOSED = "proposed"
+    PENDING = "pending"
     VALIDATED = "validated"
     APPROVED = "approved"
     REJECTED = "rejected"

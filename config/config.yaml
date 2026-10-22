@@ -70,7 +70,9 @@ rag:
 llm:
   default_provider: "groq"
   default_model: "llama-3.3-70b-versatile"
+  fallback_model: "llama-3.1-8b-instant"
   max_context_tokens: 4000
+  fallback_max_tokens: 2048
   temperature: 0.1
 
 
