@@ -14,6 +14,7 @@ class SourceFile:
         size_bytes: int = 0,
         content_hash: Optional[str] = None,
         file_id: Optional[str] = None,
+        content: Optional[str] = None,
     ):
         self.file_path = Path(file_path).resolve() if isinstance(file_path, str) else file_path.resolve()
         self.relative_path = Path(relative_path) if isinstance(relative_path, str) else relative_path
@@ -22,6 +23,7 @@ class SourceFile:
         self.size_bytes = size_bytes
         self.content_hash = content_hash
         self.file_id = file_id if file_id else str(uuid.uuid4())
+        self.content = content or ""
         
     @property
     def extension(self) -> str:
