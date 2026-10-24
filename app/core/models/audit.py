@@ -27,6 +27,12 @@ class AuditFinding:
         metadata: Optional[Dict[str, Any]] = None,
         rule_id: Optional[str] = None,
         line_number: Optional[int] = None,
+        affected_files: Optional[List[str]] = None,
+        context_snippet: Optional[str] = None,
+        start_column: Optional[int] = None,
+        end_column: Optional[int] = None,
+        relative_file_path: Optional[str] = None,
+        snippet: Optional[str] = None,
     ):
         self.finding_id = finding_id if finding_id else str(uuid.uuid4())
         self.title = title
@@ -35,9 +41,30 @@ class AuditFinding:
         self.severity = severity
         self.confidence = confidence
         self.file_path = Path(file_path).as_posix() if file_path else ""
-        self.start_line = int(line_number) if line_number is not None else int(start_line)
-        self.end_line = int(line_number) if line_number is not None else int(end_line)
-        self.code_snippet = code_snippet
+        if relative_file_path:
+            self.relative_file_path = Path(relative_file_path).as_posix()
+        elif self.file_path and not Path(self.file_path).is_absolute():
+            self.relative_file_path = self.file_path
+        else:
+            self.relative_file_path = self.file_path
+
+        raw_start = int(line_number) if line_number is not None else int(start_line)
+        raw_end = int(line_number) if line_number is not None else int(end_line)
+        self.start_line = max(1, raw_start)
+        self.end_line = max(self.start_line, raw_end)
+
+        self.start_column = max(1, int(start_column)) if start_column is not None else None
+        if end_column is not None:
+            self.end_column = max(self.start_column or 1, int(end_column))
+        else:
+            self.end_column = None
+
+        self.code_snippet = snippet if (snippet is not None and not code_snippet) else code_snippet
+        self.context_snippet = context_snippet
+        if affected_files is not None:
+            self.affected_files = [Path(f).as_posix() for f in affected_files]
+        else:
+            self.affected_files = [self.file_path] if self.file_path else []
         self.cwe_id = cwe_id
         self.recommendation = recommendation
         self.source = source
@@ -50,8 +77,47 @@ class AuditFinding:
         return self.start_line
 
     @property
+    def snippet(self) -> Optional[str]:
+        """Convenience alias for code_snippet."""
+        return self.code_snippet
+
+    @snippet.setter
+    def snippet(self, value: Optional[str]) -> None:
+        self.code_snippet = value
+
+    @property
     def rule_id(self) -> str:
         return self.metadata.get("rule_id", "")
+
+    def extract_context_snippet(self, file_content: str, context_lines: int = 2) -> str:
+        """
+        Extract code snippet surrounding [start_line, end_line] with line numbers and a pointer marker '>'.
+        """
+        if not file_content:
+            return ""
+        lines = file_content.splitlines()
+        total_lines = len(lines)
+        if total_lines == 0:
+            return ""
+
+        # Clamp lines
+        start_idx = max(1, self.start_line)
+        end_idx = min(total_lines, max(start_idx, self.end_line))
+
+        window_start = max(1, start_idx - context_lines)
+        window_end = min(total_lines, end_idx + context_lines)
+
+        formatted_lines = []
+        for line_no in range(window_start, window_end + 1):
+            line_text = lines[line_no - 1]
+            marker = ">" if (start_idx <= line_no <= end_idx) else " "
+            formatted_lines.append(f"{marker} {line_no:4d} | {line_text}")
+
+        self.context_snippet = "\n".join(formatted_lines)
+        if not self.code_snippet:
+            self.code_snippet = "\n".join(lines[start_idx - 1:end_idx])
+
+        return self.context_snippet
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert finding to JSON-serializable dictionary."""
@@ -63,9 +129,15 @@ class AuditFinding:
             "severity": self.severity.value if hasattr(self.severity, "value") else str(self.severity),
             "confidence": self.confidence.value if hasattr(self.confidence, "value") else str(self.confidence),
             "file_path": self.file_path,
+            "relative_file_path": self.relative_file_path,
+            "affected_files": self.affected_files,
             "start_line": self.start_line,
             "end_line": self.end_line,
+            "start_column": self.start_column,
+            "end_column": self.end_column,
             "code_snippet": self.code_snippet,
+            "snippet": self.snippet,
+            "context_snippet": self.context_snippet,
             "cwe_id": self.cwe_id,
             "recommendation": self.recommendation,
             "source": self.source,

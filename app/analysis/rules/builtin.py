@@ -1,3 +1,4 @@
+from pathlib import Path
 import re
 import uuid
 from typing import Any, List, Optional, Tuple
@@ -63,8 +64,11 @@ class HardcodedSecretRule(SecurityRule):
                             severity=self.severity,
                             confidence=self.confidence,
                             cwe_id=self.cwe_id,
-                            file_path=source_file.relative_path,
+                            file_path=str(source_file.relative_path).replace("\\", "/") if getattr(source_file, "relative_path", None) else str(source_file.file_path).replace("\\", "/"),
+                            relative_file_path=str(source_file.relative_path).replace("\\", "/") if getattr(source_file, "relative_path", None) else "",
                             line_number=idx,
+                            start_column=match.start() + 1,
+                            end_column=match.end() + 1,
                             code_snippet=line.strip(),
                             recommendation=self.recommendation,
                         )
@@ -102,7 +106,8 @@ class SQLInjectionRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
-            if self._pattern.search(line):
+            match = self._pattern.search(line)
+            if match:
                 findings.append(
                     AuditFinding(
                         finding_id=f"FINDING-{uuid.uuid4().hex[:8].upper()}",
@@ -112,8 +117,11 @@ class SQLInjectionRule(SecurityRule):
                         severity=self.severity,
                         confidence=self.confidence,
                         cwe_id=self.cwe_id,
-                        file_path=source_file.relative_path,
+                        file_path=str(source_file.relative_path).replace("\\", "/") if getattr(source_file, "relative_path", None) else str(source_file.file_path).replace("\\", "/"),
+                        relative_file_path=str(source_file.relative_path).replace("\\", "/"),
                         line_number=idx,
+                        start_column=match.start() + 1,
+                        end_column=match.end() + 1,
                         code_snippet=line.strip(),
                         recommendation=self.recommendation,
                     )
@@ -150,7 +158,8 @@ class CommandInjectionRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
-            if self._pattern.search(line):
+            match = self._pattern.search(line)
+            if match:
                 findings.append(
                     AuditFinding(
                         finding_id=f"FINDING-{uuid.uuid4().hex[:8].upper()}",
@@ -160,8 +169,11 @@ class CommandInjectionRule(SecurityRule):
                         severity=self.severity,
                         confidence=self.confidence,
                         cwe_id=self.cwe_id,
-                        file_path=source_file.relative_path,
+                        file_path=str(source_file.relative_path).replace("\\", "/") if getattr(source_file, "relative_path", None) else str(source_file.file_path).replace("\\", "/"),
+                        relative_file_path=str(source_file.relative_path).replace("\\", "/"),
                         line_number=idx,
+                        start_column=match.start() + 1,
+                        end_column=match.end() + 1,
                         code_snippet=line.strip(),
                         recommendation=self.recommendation,
                     )
@@ -210,8 +222,11 @@ class DangerousFunctionRule(SecurityRule):
                         severity=self.severity,
                         confidence=self.confidence,
                         cwe_id=self.cwe_id,
-                        file_path=source_file.relative_path,
+                        file_path=str(source_file.relative_path).replace("\\", "/") if getattr(source_file, "relative_path", None) else str(source_file.file_path).replace("\\", "/"),
+                        relative_file_path=str(source_file.relative_path).replace("\\", "/"),
                         line_number=idx,
+                        start_column=match.start() + 1,
+                        end_column=match.end() + 1,
                         code_snippet=line.strip(),
                         recommendation=self.recommendation,
                     )
@@ -248,7 +263,8 @@ class WeakCryptoRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
-            if self._pattern.search(line):
+            match = self._pattern.search(line)
+            if match:
                 findings.append(
                     AuditFinding(
                         finding_id=f"FINDING-{uuid.uuid4().hex[:8].upper()}",
@@ -258,8 +274,11 @@ class WeakCryptoRule(SecurityRule):
                         severity=self.severity,
                         confidence=self.confidence,
                         cwe_id=self.cwe_id,
-                        file_path=source_file.relative_path,
+                        file_path=str(source_file.relative_path).replace("\\", "/") if getattr(source_file, "relative_path", None) else str(source_file.file_path).replace("\\", "/"),
+                        relative_file_path=str(source_file.relative_path).replace("\\", "/"),
                         line_number=idx,
+                        start_column=match.start() + 1,
+                        end_column=match.end() + 1,
                         code_snippet=line.strip(),
                         recommendation=self.recommendation,
                     )
