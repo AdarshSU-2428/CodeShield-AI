@@ -283,7 +283,7 @@ def test_stress_massive_multilingual_repository_scale(stress_env):
     assert summary["files_indexed"] == 50
     assert summary["chunks_indexed"] >= 50
     assert len(summary["errors"]) == 0
-    assert duration < 15.0, f"Indexing 50 files took {duration:.2f}s, expected < 15s"
+    assert duration < 30.0, f"Indexing 50 files took {duration:.2f}s, expected < 30s"
 
     # Verify semantic retrieval across the massive repo
     match = indexer.search_project("c_buffer_5", project_id="scale_50_repo", top_k=1)

@@ -1,12 +1,16 @@
-from app.analysis.rule_engine import RuleEngine, default_rule_engine
+import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 import uuid
 
+from app.analysis.ai_analyzer import AIVulnerabilityAnalyzer
+from app.analysis.rule_engine import RuleEngine, default_rule_engine
 from app.analysis.component_extractor import ComponentExtractor
 from app.analysis.parser import ParserRegistry
 from app.analysis.scanner import RepositoryScanner
+from app.analysis.quality_analyzer import ArchitecturalSmellDetector, CodeQualityAnalyzer
+from app.analysis.attribution_helper import FindingAttributionHelper
 from app.core.enums import Confidence, FileStatus, FindingCategory, JobStatus, Language, Severity
 from app.core.interfaces.filesystem import FileSystem
 from app.core.models.audit import AuditFinding, AuditJob, AuditProgress, AuditReport
@@ -30,6 +34,11 @@ class AuditService:
         filesystem: Optional[FileSystem] = None,
         config: Optional[AppConfig] = None,
         rule_engine: Optional[RuleEngine] = None,
+        ai_analyzer: Optional[AIVulnerabilityAnalyzer] = None,
+        quality_analyzer: Optional[CodeQualityAnalyzer] = None,
+        architecture_detector: Optional[ArchitecturalSmellDetector] = None,
+        reports_dir: Optional[Union[str, Path]] = None,
+        auto_save_report: bool = True,
     ):
         self.config = config if config else default_config
         self.filesystem = filesystem if filesystem else LocalFileSystem()
@@ -37,6 +46,11 @@ class AuditService:
         self.parser_registry = parser_registry if parser_registry else ParserRegistry()
         self.extractor = extractor if extractor else ComponentExtractor()
         self.rule_engine = rule_engine if rule_engine else default_rule_engine
+        self.ai_analyzer = ai_analyzer
+        self.quality_analyzer = quality_analyzer if quality_analyzer is not None else CodeQualityAnalyzer()
+        self.architecture_detector = architecture_detector if architecture_detector is not None else ArchitecturalSmellDetector()
+        self.reports_dir = Path(reports_dir) if reports_dir is not None else Path("data/reports")
+        self.auto_save_report = auto_save_report
         
         # In-memory storage for active jobs and final reports
         self._jobs: Dict[str, AuditJob] = {}
@@ -63,6 +77,18 @@ class AuditService:
     def get_report(self, job_id: str) -> Optional[AuditReport]:
         """Retrieve the final audit report for a completed job."""
         return self._reports.get(job_id)
+
+    def save_report_to_file(
+        self,
+        report: AuditReport,
+        output_dir: Optional[Union[str, Path]] = None,
+    ) -> Path:
+        target_dir = Path(output_dir) if output_dir is not None else self.reports_dir
+        report_path = target_dir / f"audit_report_{report.job_id}.json"
+        json_content = json.dumps(report.to_dict(), indent=2)
+        self.filesystem.write_text(report_path, json_content)
+        return report_path
+
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel an ongoing or queued audit job."""
@@ -114,6 +140,10 @@ class AuditService:
         
         if not job:
             raise ValueError(f"Audit job with ID '{job_id}' not found.")
+
+        # Check if job was already cancelled before execution
+        if job.status == JobStatus.CANCELLED:
+            return self._finalize_cancelled(job, project)
 
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc)
@@ -217,6 +247,25 @@ class AuditService:
                 rule_findings = self.rule_engine.analyze_file(source_file)
                 job.findings.extend(rule_findings)
 
+                # AI-assisted semantic vulnerability analysis (US 9)
+                if self.ai_analyzer:
+                    ai_findings = self.ai_analyzer.analyze_file(source_file)
+                    job.findings.extend(ai_findings)
+
+                # Code quality maintainability analysis (US 15)
+                if self.quality_analyzer:
+                    quality_findings = self.quality_analyzer.evaluate_file(source_file)
+                    job.findings.extend(quality_findings)
+
+            # System-wide architectural smell detection (US 15: circular dependencies, god classes)
+            if self.architecture_detector:
+                arch_findings = self.architecture_detector.evaluate_architecture(supported_files)
+                job.findings.extend(arch_findings)
+
+            # Hydrate findings with exact line boundaries and contextual snippets (US 16)
+            attribution_helper = FindingAttributionHelper(filesystem=self.filesystem)
+            attribution_helper.hydrate_findings(job.findings)
+
             self._update_job_progress(job, "analyzing_complete", 90.0, on_progress=on_progress)
 
             # -------------------------------------------------------------
@@ -239,6 +288,11 @@ class AuditService:
             )
 
             self._reports[job.job_id] = report
+            if self.auto_save_report:
+                try:
+                    self.save_report_to_file(report)
+                except Exception:
+                    pass
             self._update_job_progress(job, "complete", 100.0, on_progress=on_progress)
             
             return report
