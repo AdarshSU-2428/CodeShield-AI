@@ -142,8 +142,22 @@ class AIVulnerabilityAnalyzer:
             except (ValueError, TypeError):
                 end_line = start_line
 
+            try:
+                start_col = int(item.get("start_column") or item.get("column") or 0)
+                start_col = start_col if start_col > 0 else None
+            except (ValueError, TypeError):
+                start_col = None
+
+            try:
+                end_col = int(item.get("end_column") or start_col or 0)
+                end_col = end_col if end_col > 0 else None
+            except (ValueError, TypeError):
+                end_col = None
+
             snippet = item.get("code_snippet") or item.get("snippet")
             rec = item.get("recommendation") or "Review and sanitize input."
+
+            rel_path = str(source_file.relative_path or Path(source_file.file_path).name).replace("\\", "/")
 
             # Metadata tracking for cross-file auditing
             meta: Dict[str, Any] = {"ai_auditor": "groq_llm"}
@@ -159,14 +173,20 @@ class AIVulnerabilityAnalyzer:
                 severity=sev,
                 confidence=conf,
                 file_path=source_file.file_path,
+                relative_file_path=rel_path,
                 start_line=start_line,
                 end_line=end_line,
+                start_column=start_col,
+                end_column=end_col,
                 code_snippet=snippet,
                 cwe_id=cwe_id,
                 recommendation=rec,
                 source="ai_llm",
                 metadata=meta,
             )
+            if getattr(source_file, "content", None):
+                finding.extract_context_snippet(source_file.content)
+
             findings.append(finding)
 
         return findings
