@@ -1,7 +1,19 @@
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Set
+import os
 import yaml
+
+try:
+    from dotenv import load_dotenv
+    # Load .env from project root if it exists
+    env_file = Path(__file__).resolve().parent.parent.parent / '.env'
+    if env_file.exists():
+        load_dotenv(dotenv_path=env_file)
+    else:
+        load_dotenv()
+except ImportError:
+    pass
+
 
 from app.core.enums import Language
 
