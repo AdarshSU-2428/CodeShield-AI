@@ -1,125 +1,110 @@
-import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 
-from app.analysis.ai_analyzer import AIVulnerabilityAnalyzer
-from app.analysis.rule_engine import RuleEngine, default_rule_engine
-from app.analysis.component_extractor import ComponentExtractor
-from app.analysis.parser import ParserRegistry
-from app.analysis.scanner import RepositoryScanner
-from app.analysis.quality_analyzer import ArchitecturalSmellDetector, CodeQualityAnalyzer
 from app.analysis.attribution_helper import FindingAttributionHelper
-from app.core.enums import Confidence, FileStatus, FindingCategory, JobStatus, Language, Severity
+from app.analysis.cross_file import CrossFileContextResolver
+from app.analysis.parser import ParserRegistry, parser_registry
+from app.analysis.quality_analyzer import ArchitecturalSmellDetector, CodeQualityAnalyzer
+from app.analysis.rule_engine import RuleEngine, default_rule_engine
+from app.analysis.scanner import RepositoryScanner
+from app.core.enums import Confidence, FindingCategory, JobStatus, Severity
 from app.core.interfaces.filesystem import FileSystem
 from app.core.models.audit import AuditFinding, AuditJob, AuditProgress, AuditReport
+from app.core.models.code import SourceFile
 from app.core.models.project import Project
-from app.infrastructure.config import AppConfig, config as default_config
 from app.infrastructure.filesystem import LocalFileSystem
 
 
 class AuditService:
-    """
-    Orchestrates the complete static analysis and audit lifecycle.
-    Manages job states, drives multi-phase scanning and AST extraction,
-    and streams real-time progress updates.
-    """
+    """Orchestrates end-to-end security audits across static rules, code quality, and deep attribution."""
 
     def __init__(
         self,
         scanner: Optional[RepositoryScanner] = None,
-        parser_registry: Optional[ParserRegistry] = None,
-        extractor: Optional[ComponentExtractor] = None,
         filesystem: Optional[FileSystem] = None,
-        config: Optional[AppConfig] = None,
+        parser_reg: Optional[ParserRegistry] = None,
         rule_engine: Optional[RuleEngine] = None,
-        ai_analyzer: Optional[AIVulnerabilityAnalyzer] = None,
         quality_analyzer: Optional[CodeQualityAnalyzer] = None,
         architecture_detector: Optional[ArchitecturalSmellDetector] = None,
-        reports_dir: Optional[Union[str, Path]] = None,
+        attribution_helper: Optional[FindingAttributionHelper] = None,
+        cross_file_resolver: Optional[CrossFileContextResolver] = None,
+        ai_analyzer: Optional[Any] = None,
         auto_save_report: bool = True,
     ):
-        self.config = config if config else default_config
-        self.filesystem = filesystem if filesystem else LocalFileSystem()
-        self.scanner = scanner if scanner else RepositoryScanner(filesystem=self.filesystem, config=self.config)
-        self.parser_registry = parser_registry if parser_registry else ParserRegistry()
-        self.extractor = extractor if extractor else ComponentExtractor()
-        self.rule_engine = rule_engine if rule_engine else default_rule_engine
-        self.ai_analyzer = ai_analyzer
-        self.quality_analyzer = quality_analyzer if quality_analyzer is not None else CodeQualityAnalyzer()
-        self.architecture_detector = architecture_detector if architecture_detector is not None else ArchitecturalSmellDetector()
-        self.reports_dir = Path(reports_dir) if reports_dir is not None else Path("data/reports")
-        self.auto_save_report = auto_save_report
-        
-        # In-memory storage for active jobs and final reports
+        self._fs: FileSystem = filesystem if filesystem is not None else LocalFileSystem()
+        self._scanner: RepositoryScanner = scanner if scanner is not None else RepositoryScanner(filesystem=self._fs)
+        self._parsers: ParserRegistry = parser_reg if parser_reg is not None else parser_registry
+        self._rule_engine: RuleEngine = rule_engine if rule_engine is not None else default_rule_engine
+        self._quality_analyzer: CodeQualityAnalyzer = (
+            quality_analyzer if quality_analyzer is not None else CodeQualityAnalyzer()
+        )
+        self._architecture_detector: ArchitecturalSmellDetector = (
+            architecture_detector if architecture_detector is not None else ArchitecturalSmellDetector()
+        )
+        self._attribution_helper: FindingAttributionHelper = (
+            attribution_helper if attribution_helper is not None else FindingAttributionHelper(filesystem=self._fs)
+        )
+        self._cross_resolver: CrossFileContextResolver = (
+            cross_file_resolver if cross_file_resolver is not None else CrossFileContextResolver(filesystem=self._fs)
+        )
+        self._auto_save_report: bool = auto_save_report
+
         self._jobs: Dict[str, AuditJob] = {}
         self._reports: Dict[str, AuditReport] = {}
+        self._ai_analyzer = ai_analyzer
 
     def create_job(self, project: Project) -> AuditJob:
-        """Create and queue a new audit job for the given project."""
-        project_id = getattr(project, "project_id", getattr(project, "id", str(project.root_path)))
-        
-        job = AuditJob(
-            project_id=project_id,
-            status=JobStatus.QUEUED,
-            progress=AuditProgress(current_step="queued", percentage=0.0),
-        )
-        
+        """Initialize and store a new audit job in QUEUED status."""
+        job = AuditJob(project_id=project.project_id)
         self._jobs[job.job_id] = job
-        
         return job
 
     def get_job(self, job_id: str) -> Optional[AuditJob]:
-        """Retrieve an audit job by its UUID."""
+        """Retrieve an audit job by its unique identifier."""
         return self._jobs.get(job_id)
 
     def get_report(self, job_id: str) -> Optional[AuditReport]:
-        """Retrieve the final audit report for a completed job."""
+        """Retrieve the final audit report for a given job."""
         return self._reports.get(job_id)
-
-    def save_report_to_file(
-        self,
-        report: AuditReport,
-        output_dir: Optional[Union[str, Path]] = None,
-    ) -> Path:
-        target_dir = Path(output_dir) if output_dir is not None else self.reports_dir
-        report_path = target_dir / f"audit_report_{report.job_id}.json"
-        json_content = json.dumps(report.to_dict(), indent=2)
-        self.filesystem.write_text(report_path, json_content)
-        return report_path
-
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel an ongoing or queued audit job."""
         job = self.get_job(job_id)
-        
         if not job or job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
             return False
-        
+
         job.status = JobStatus.CANCELLED
-        job.progress.current_step = "cancelled"
         job.completed_at = datetime.now(timezone.utc)
-        
+        job.progress.current_step = "cancelled"
         return True
 
-    def _update_job_progress(
+    def _update_progress(
         self,
         job: AuditJob,
         step: str,
         percentage: float,
         current_file: Optional[str] = None,
-        on_progress: Optional[Callable[[AuditProgress], None]] = None,
+        scanned: Optional[int] = None,
+        total: Optional[int] = None,
+        findings_count: Optional[int] = None,
+        callback: Optional[Callable[[AuditProgress], None]] = None,
     ) -> None:
-        """Class-level method to update progress metrics and trigger listener callbacks."""
+        """Update job progress telemetry and notify callback."""
         job.progress.current_step = step
-        job.progress.percentage = round(percentage, 1)
+        job.progress.percentage = percentage
         job.progress.current_file = current_file
-        job.progress.findings_count = len(job.findings)
-        
-        if on_progress:
+        if scanned is not None:
+            job.progress.scanned_files_count = scanned
+        if total is not None:
+            job.progress.total_files_count = total
+        if findings_count is not None:
+            job.progress.findings_count = findings_count
+
+        if callback:
             try:
-                on_progress(job.progress)
+                callback(job.progress)
             except Exception:
                 pass
 
@@ -130,191 +115,229 @@ class AuditService:
         on_progress: Optional[Callable[[AuditProgress], None]] = None,
     ) -> AuditReport:
         """
-        Execute the multi-phase audit pipeline synchronously or within a worker thread:
-        Phase 1: Repository Scanning & Filtering (0% - 25%)
-        Phase 2: Multi-Language AST Parsing & Extraction (25% - 70%)
-        Phase 3: Finding Aggregation & Rule Evaluation (70% - 90%)
-        Phase 4: Finalizing & Audit Report Generation (90% - 100%)
+        Execute full multi-phase audit pipeline:
+        Phase 1: Project File Discovery
+        Phase 2: Multi-Language AST Parsing, Static Rules, and Architectural Smells
+        Phase 3: Precise Code Attribution, Context Windows, and Severity Prioritization
         """
         job = self.get_job(job_id)
-        
         if not job:
-            raise ValueError(f"Audit job with ID '{job_id}' not found.")
+            raise ValueError(f"Audit job '{job_id}' not found.")
 
-        # Check if job was already cancelled before execution
+        # Guard: If pre-cancelled, finalize immediately
         if job.status == JobStatus.CANCELLED:
-            return self._finalize_cancelled(job, project)
+            report = AuditReport(
+                job_id=job.job_id,
+                project_id=project.project_id,
+                findings=[],
+                summary="Audit job was cancelled by user.",
+            )
+            self._reports[job.job_id] = report
+            return report
 
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc)
+        all_findings: List[AuditFinding] = []
 
         try:
             # -------------------------------------------------------------
-            # Phase 1: Repository Scanning & File Discovery (0% - 25%)
+            # Phase 1: Project Discovery & Scanning (0% - 20%)
             # -------------------------------------------------------------
-            self._update_job_progress(job, "scanning", 5.0, on_progress=on_progress)
+            self._update_progress(job, "scanning", 5.0, callback=on_progress)
             
-            scanned_files = self.scanner.scan_project(project)
+            try:
+                source_files: List[SourceFile] = self._scanner.scan_project(project)
+            except Exception:
+                source_files = self._scanner.scan_project(project.root_path)
             
-            supported_files = [
-                f for f in scanned_files 
-                if f.status != FileStatus.UNSUPPORTED and f.language != Language.UNKNOWN
-            ]
-            
-            total_supported = len(supported_files)
-            job.progress.total_files_count = total_supported
-            job.progress.scanned_files_count = 0
-            self._update_job_progress(job, "scanning_complete", 25.0, on_progress=on_progress)
+            total_files = len(source_files)
+            job.progress.total_files_count = total_files
 
-            # Check if job was cancelled during scanning
-            if job.status == JobStatus.CANCELLED:
-                return self._finalize_cancelled(job, project)
+            self._update_progress(
+                job,
+                "scanning_complete",
+                20.0,
+                scanned=total_files,
+                total=total_files,
+                callback=on_progress,
+            )
+
+            if total_files == 0:
+                report = AuditReport(
+                    job_id=job.job_id,
+                    project_id=project.project_id,
+                    findings=[],
+                    summary="No supported source code files detected in project workspace.",
+                )
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.now(timezone.utc)
+                self._reports[job.job_id] = report
+                self._update_progress(job, "complete", 100.0, callback=on_progress)
+                return report
 
             # -------------------------------------------------------------
-            # Phase 2: AST Parsing & Component Extraction (25% - 70%)
+            # Phase 2: Multi-Language Parsing, Rule Engine & Quality (20% - 75%)
             # -------------------------------------------------------------
-            all_components = []
-            
-            for idx, source_file in enumerate(supported_files, start=1):
-                # Check for cancellation between files
+            parsed_trees: Dict[str, Any] = {}
+
+            for idx, sf in enumerate(source_files, start=1):
                 if job.status == JobStatus.CANCELLED:
-                    return self._finalize_cancelled(job, project)
+                    break
 
-                file_path_str = str(source_file.file_path)
-                pct = 25.0 + (45.0 * (idx / max(1, total_supported)))
-                job.progress.scanned_files_count = idx
-                
-                self._update_job_progress(
-                    job, "ast_parsing", pct, current_file=Path(file_path_str).name, on_progress=on_progress
+                file_path_str = str(sf.file_path)
+                pct = 20.0 + ((idx / total_files) * 55.0)
+                self._update_progress(
+                    job,
+                    "ast_parsing",
+                    pct,
+                    current_file=sf.relative_path or Path(file_path_str).name,
+                    scanned=idx,
+                    total=total_files,
+                    findings_count=len(all_findings),
+                    callback=on_progress,
                 )
 
-                if not self.filesystem.exists(source_file.file_path):
-                    continue
+                # 1. AST Parsing & Syntax Error Capturing
+                content = sf.content
+                if not content and self._fs.exists(sf.file_path):
+                    content = self._fs.read_text(sf.file_path)
+                    sf.content = content
 
-                source_code = self.filesystem.read_text(source_file.file_path)
-                
-                if not source_code.strip():
-                    continue
-
-                parser = self.parser_registry.get_parser(source_file.language)
-                
-                if parser:
+                tree = None
+                if self._parsers.is_supported(sf.language):
                     try:
-                        tree = parser.parse(source_code)
-                        components = self.extractor.extract_components(
-                            tree=tree,
-                            source_code=source_code,
-                            source_file=source_file,
-                            language=source_file.language,
+                        tree = self._parsers.parse_file(sf, content)
+                        parsed_trees[file_path_str] = tree
+                        if tree and getattr(tree, "root_node", None) and tree.root_node.has_error:
+                            syntax_finding = AuditFinding(
+                                title=f"Syntax Error in {sf.language.value.capitalize()} File",
+                                description=(
+                                    f"Tree-sitter parser detected a syntax error while constructing AST for {sf.relative_path}."
+                                ),
+                                category=FindingCategory.CODE_QUALITY,
+                                severity=Severity.LOW,
+                                confidence=Confidence.HIGH,
+                                file_path=sf.file_path,
+                                relative_file_path=str(sf.relative_path).replace("\\", "/") if sf.relative_path else "",
+                                start_line=1,
+                                end_line=1,
+                                source="tree_sitter",
+                            )
+                            all_findings.append(syntax_finding)
+                    except Exception as parse_err:
+                        err_finding = AuditFinding(
+                            title=f"AST Parsing Failure ({sf.language.value})",
+                            description=f"Exception raised while parsing AST: {parse_err}",
+                            category=FindingCategory.CODE_QUALITY,
+                            severity=Severity.LOW,
+                            confidence=Confidence.MEDIUM,
+                            file_path=sf.file_path,
+                            relative_file_path=str(sf.relative_path).replace("\\", "/") if sf.relative_path else "",
+                            start_line=1,
+                            end_line=1,
+                            source="parser_exception",
                         )
-                        
-                        all_components.extend(components)
-                    
+                        all_findings.append(err_finding)
+
+                # 2. Static Security Rules
+                rule_findings = self._rule_engine.analyze_file(sf)
+                all_findings.extend(rule_findings)
+
+                # 3. Code Quality & Architectural Anti-Pattern Analysis
+                quality_findings = (
+                    self._quality_analyzer.analyze_file(sf, ast_tree=tree)
+                    if hasattr(self._quality_analyzer, "analyze_file")
+                    else self._quality_analyzer.evaluate_file(sf)
+                )
+                all_findings.extend(quality_findings)
+
+                # 4. Optional AI Semantic Vulnerability Analysis
+                if self._ai_analyzer and hasattr(self._ai_analyzer, "analyze_file"):
+                    try:
+                        ai_findings = self._ai_analyzer.analyze_file(sf)
+                        all_findings.extend(ai_findings)
                     except Exception:
                         pass
 
-            # -------------------------------------------------------------
-            # Phase 3: Finding Aggregation & Quality Checks (70% - 90%)
-            # -------------------------------------------------------------
-            self._update_job_progress(job, "analyzing_findings", 75.0, on_progress=on_progress)
-            
-            # Baseline syntax & structural checks across extracted files
-            for source_file in supported_files:
-                if not self.filesystem.exists(source_file.file_path):
-                    continue
-                
-                code = self.filesystem.read_text(source_file.file_path)
-                source_file.content = code
-                parser = self.parser_registry.get_parser(source_file.language)
-                
-                if parser and not parser.is_syntax_valid(code):
-                    finding = AuditFinding(
-                        title=f"Syntax Error in {Path(source_file.file_path).name}",
-                        description="File contains fatal syntax errors that prevent full parsing.",
-                        category=FindingCategory.CODE_QUALITY,
-                        severity=Severity.HIGH,
-                        confidence=Confidence.HIGH,
-                        file_path=str(source_file.file_path),
-                        start_line=1,
-                        end_line=1,
-                        recommendation="Fix compilation or syntax errors before security auditing.",
-                        source="ast",
-                    )
-                    
-                    job.findings.append(finding)
+            # Check if job was cancelled during parsing/analysis
+            if job.status == JobStatus.CANCELLED:
+                report = AuditReport(
+                    job_id=job.job_id,
+                    project_id=project.project_id,
+                    findings=all_findings,
+                    summary="Audit job was cancelled by user.",
+                )
+                self._reports[job.job_id] = report
+                self._update_progress(job, "cancelled", job.progress.percentage, callback=on_progress)
+                return report
 
-                # Static security rule analysis
-                rule_findings = self.rule_engine.analyze_file(source_file)
-                job.findings.extend(rule_findings)
+            # Global Architectural Analysis: Circular Dependencies
+            arch_findings = (
+                self._architecture_detector.analyze_project(source_files)
+                if hasattr(self._architecture_detector, "analyze_project")
+                else self._architecture_detector.evaluate_architecture(source_files)
+            )
 
-                # AI-assisted semantic vulnerability analysis (US 9)
-                if self.ai_analyzer:
-                    ai_findings = self.ai_analyzer.analyze_file(source_file)
-                    job.findings.extend(ai_findings)
-
-                # Code quality maintainability analysis (US 15)
-                if self.quality_analyzer:
-                    quality_findings = self.quality_analyzer.evaluate_file(source_file)
-                    job.findings.extend(quality_findings)
-
-            # System-wide architectural smell detection (US 15: circular dependencies, god classes)
-            if self.architecture_detector:
-                arch_findings = self.architecture_detector.evaluate_architecture(supported_files)
-                job.findings.extend(arch_findings)
-
-            # Hydrate findings with exact line boundaries and contextual snippets (US 16)
-            attribution_helper = FindingAttributionHelper(filesystem=self.filesystem)
-            attribution_helper.hydrate_findings(job.findings)
-
-            self._update_job_progress(job, "analyzing_complete", 90.0, on_progress=on_progress)
+            all_findings.extend(arch_findings)
 
             # -------------------------------------------------------------
-            # Phase 4: Finalizing & Report Generation (90% - 100%)
+            # Phase 3: Exact Attribution & Prioritization (75% - 100%)
             # -------------------------------------------------------------
-            self._update_job_progress(job, "generating_report", 95.0, on_progress=on_progress)
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now(timezone.utc)
+            self._update_progress(
+                job,
+                "attributing_findings",
+                85.0,
+                findings_count=len(all_findings),
+                callback=on_progress,
+            )
 
+            # Hydrate context snippets & clamp line coordinates
+            self._attribution_helper.hydrate_findings(all_findings, context_lines=2)
+
+            # User Story 17: Contextual Multi-Component Linking across files
+            if self._cross_resolver:
+                for f in all_findings:
+                    self._cross_resolver.link_finding_components(f, all_project_files=source_files)
+
+            # User Story 10: Sort findings by deterministic priority/risk score (highest risk first)
+            all_findings.sort(key=lambda f: getattr(f, "risk_score", 0.0), reverse=True)
+
+            job.findings = all_findings
             summary_text = (
-                f"Audit completed: {job.progress.scanned_files_count} files analyzed, "
-                f"{len(job.findings)} findings identified."
+                f"Audit completed across {total_files} files with {len(all_findings)} finding(s) detected. "
+                f"Findings prioritized by risk score."
             )
 
             report = AuditReport(
                 job_id=job.job_id,
-                project_id=job.project_id,
-                findings=job.findings,
+                project_id=project.project_id,
+                findings=all_findings,
                 summary=summary_text,
             )
 
             self._reports[job.job_id] = report
-            if self.auto_save_report:
-                try:
-                    self.save_report_to_file(report)
-                except Exception:
-                    pass
-            self._update_job_progress(job, "complete", 100.0, on_progress=on_progress)
-            
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.now(timezone.utc)
+
+            self._update_progress(
+                job,
+                "complete",
+                100.0,
+                scanned=total_files,
+                total=total_files,
+                findings_count=len(all_findings),
+                callback=on_progress,
+            )
+
             return report
 
-        except Exception as e:
+        except Exception as exc:
             job.status = JobStatus.FAILED
-            job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
-            self._update_job_progress(job, "failed", job.progress.percentage, on_progress=on_progress)
-            raise e
+            job.error_message = str(exc)
+            self._update_progress(job, "failed", 100.0, callback=on_progress)
+            raise exc
 
-    def _finalize_cancelled(self, job: AuditJob, project: Project) -> AuditReport:
-        """Helper to create a partial report when a job is cancelled prematurely."""
-        job.status = JobStatus.CANCELLED
-        job.completed_at = datetime.now(timezone.utc)
-        report = AuditReport(
-            job_id=job.job_id,
-            project_id=job.project_id,
-            findings=job.findings,
-            summary="Audit job was cancelled by user.",
-        )
-        
-        self._reports[job.job_id] = report
-        
-        return report
+
+# Singleton instance for system-wide auditing
+default_audit_service = AuditService()
