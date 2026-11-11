@@ -36,8 +36,11 @@ class PatchApplier:
         )
         self._lock = threading.Lock()
 
-    def apply_patch(self, patch: Patch) -> bool:
-        """Apply patch to target file with mandatory pre-application backup and post-patch validation."""
+    def apply_patch(self, patch: Patch, validate_pre_syntax: bool = True) -> bool:
+        """
+        Apply patch to target file with mandatory pre-application syntax validation,
+        cryptographic backup, and post-patch integrity check.
+        """
         with self._lock:
             target_path = Path(patch.file_path).resolve()
 
@@ -46,8 +49,8 @@ class PatchApplier:
                 raise FileNotFoundError(f"Target file for patch application does not exist: {target_path}")
 
             try:
-                # 1. Pre-patch validation (detect stale patches or empty files)
-                self.validator.validate_pre_patch(patch)
+                # 1. Pre-patch validation (detect stale patches or empty files, AND pre-validate candidate syntax)
+                self.validator.validate_pre_patch(patch, validate_candidate_syntax=validate_pre_syntax)
 
                 # 2. Mandatory cryptographic backup before disk mutation
                 backup_file = self.backup_manager.create_backup(target_path, patch.patch_id)
@@ -72,3 +75,10 @@ class PatchApplier:
             except Exception as exc:
                 patch.status = PatchStatus.FAILED
                 raise exc
+
+    def validate_and_apply(self, patch: Patch) -> bool:
+        """
+        User Story 20: Explicit QA pre-flight validation and atomic patch application.
+        Rejects patches with invalid syntax before any disk mutation or backup creation.
+        """
+        return self.apply_patch(patch, validate_pre_syntax=True)

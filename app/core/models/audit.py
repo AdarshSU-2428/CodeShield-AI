@@ -6,6 +6,21 @@ import uuid
 from app.core.enums import Confidence, FindingCategory, JobStatus, Severity
 
 
+SEVERITY_WEIGHTS: Dict[str, float] = {
+    Severity.CRITICAL.value: 10.0,
+    Severity.HIGH.value: 8.0,
+    Severity.MEDIUM.value: 5.0,
+    Severity.LOW.value: 2.5,
+    Severity.INFO.value: 1.0,
+}
+
+CONFIDENCE_MULTIPLIERS: Dict[str, float] = {
+    Confidence.HIGH.value: 1.0,
+    Confidence.MEDIUM.value: 0.8,
+    Confidence.LOW.value: 0.6,
+}
+
+
 class AuditFinding:
     """Normalized security vulnerability or code quality finding."""
 
@@ -33,6 +48,13 @@ class AuditFinding:
         end_column: Optional[int] = None,
         relative_file_path: Optional[str] = None,
         snippet: Optional[str] = None,
+        risk_score: Optional[float] = None,
+        evidence: Optional[Dict[str, Any]] = None,
+        risk_explanation: Optional[str] = None,
+        exploit_scenario: Optional[str] = None,
+        remediation_code: Optional[str] = None,
+        remediation_steps: Optional[List[str]] = None,
+        related_components: Optional[List[Dict[str, Any]]] = None,
     ):
         self.finding_id = finding_id if finding_id else str(uuid.uuid4())
         self.title = title
@@ -72,6 +94,49 @@ class AuditFinding:
         if rule_id:
             self.metadata['rule_id'] = rule_id
 
+        # Calculate or assign deterministic risk score (0.0 to 10.0 scale)
+        if risk_score is not None:
+            self._risk_score = round(max(0.0, min(10.0, float(risk_score))), 2)
+        else:
+            self._risk_score = self._compute_risk_score()
+
+        # User Story 12: Finding Evidence & Risk Explanations
+        self.evidence: Dict[str, Any] = evidence if evidence is not None else {}
+        self.risk_explanation: Optional[str] = risk_explanation
+        self.exploit_scenario: Optional[str] = exploit_scenario
+
+        # User Story 14: Secure Remediation Generation
+        self.remediation_code: Optional[str] = remediation_code
+        self.remediation_steps: List[str] = list(remediation_steps) if remediation_steps is not None else []
+
+        # User Story 17: Contextual Findings with Multi-Component Linking
+        self.related_components: List[Dict[str, Any]] = (
+            [dict(c) for c in related_components] if related_components is not None else []
+        )
+
+    def _compute_risk_score(self) -> float:
+        """Compute standard CVSS-aligned risk score based on severity and confidence."""
+        sev_key = self.severity.value if hasattr(self.severity, "value") else str(self.severity).lower()
+        conf_key = self.confidence.value if hasattr(self.confidence, "value") else str(self.confidence).lower()
+
+        base_weight = SEVERITY_WEIGHTS.get(sev_key, 5.0)
+        multiplier = CONFIDENCE_MULTIPLIERS.get(conf_key, 1.0)
+        return round(base_weight * multiplier, 2)
+
+    @property
+    def risk_score(self) -> float:
+        """Return the calculated risk/priority score (0.0 - 10.0)."""
+        return self._risk_score
+
+    @risk_score.setter
+    def risk_score(self, value: float) -> None:
+        self._risk_score = round(max(0.0, min(10.0, float(value))), 2)
+
+    @property
+    def priority_score(self) -> float:
+        """Alias for risk_score."""
+        return self._risk_score
+
     @property
     def line_number(self) -> int:
         return self.start_line
@@ -82,12 +147,28 @@ class AuditFinding:
         return self.code_snippet
 
     @snippet.setter
-    def snippet(self, value: Optional[str]) -> None:
-        self.code_snippet = value
+    def snippet(self, val: Optional[str]) -> None:
+        self.code_snippet = val
 
-    @property
-    def rule_id(self) -> str:
-        return self.metadata.get("rule_id", "")
+    def add_related_component(
+        self,
+        component_name: str,
+        component_type: str,
+        file_path: Union[str, Path],
+        line_number: int = 1,
+        relation: str = "related",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Add a linked repository component (function, class, caller, callee, import)."""
+        comp = {
+            "component_name": component_name,
+            "component_type": component_type,
+            "file_path": Path(file_path).as_posix() if file_path else "",
+            "line_number": max(1, int(line_number)),
+            "relation": relation,
+            "metadata": metadata if metadata is not None else {},
+        }
+        self.related_components.append(comp)
 
     def extract_context_snippet(self, file_content: str, context_lines: int = 2) -> str:
         """
@@ -128,6 +209,8 @@ class AuditFinding:
             "category": self.category.value if hasattr(self.category, "value") else str(self.category),
             "severity": self.severity.value if hasattr(self.severity, "value") else str(self.severity),
             "confidence": self.confidence.value if hasattr(self.confidence, "value") else str(self.confidence),
+            "risk_score": self.risk_score,
+            "priority_score": self.priority_score,
             "file_path": self.file_path,
             "relative_file_path": self.relative_file_path,
             "affected_files": self.affected_files,
@@ -140,12 +223,18 @@ class AuditFinding:
             "context_snippet": self.context_snippet,
             "cwe_id": self.cwe_id,
             "recommendation": self.recommendation,
+            "evidence": self.evidence,
+            "risk_explanation": self.risk_explanation,
+            "exploit_scenario": self.exploit_scenario,
+            "remediation_code": self.remediation_code,
+            "remediation_steps": self.remediation_steps,
+            "related_components": self.related_components,
             "source": self.source,
             "metadata": self.metadata,
         }
 
     def __repr__(self) -> str:
-        return f"<AuditFinding title='{self.title}' severity='{self.severity}' file='{self.file_path}:{self.start_line}'>"
+        return f"<AuditFinding title='{self.title}' severity='{self.severity}' risk={self.risk_score} file='{self.file_path}:{self.start_line}'>"
 
 
 class AuditProgress:
@@ -187,47 +276,46 @@ class AuditJob:
 
     def __init__(
         self,
-        project_id: str,
         job_id: Optional[str] = None,
+        project_id: str = "",
         status: JobStatus = JobStatus.QUEUED,
-        progress: Optional[AuditProgress] = None,
         created_at: Optional[datetime] = None,
         started_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
         error_message: Optional[str] = None,
+        progress: Optional[AuditProgress] = None,
         findings: Optional[List[AuditFinding]] = None,
     ):
         self.job_id = job_id if job_id else str(uuid.uuid4())
         self.project_id = str(project_id)
         self.status = status
-        self.progress = progress if progress else AuditProgress()
         self.created_at = created_at if created_at else datetime.now(timezone.utc)
         self.started_at = started_at
         self.completed_at = completed_at
         self.error_message = error_message
+        self.progress = progress if progress else AuditProgress()
         self.findings = findings if findings else []
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert job model to dictionary."""
+        """Convert job representation to JSON-friendly dictionary."""
         return {
             "job_id": self.job_id,
             "project_id": self.project_id,
             "status": self.status.value if hasattr(self.status, "value") else str(self.status),
-            "progress": self.progress.to_dict(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "error_message": self.error_message,
+            "progress": self.progress.to_dict(),
             "findings_count": len(self.findings),
-            "findings": [f.to_dict() for f in self.findings],
         }
 
     def __repr__(self) -> str:
-        return f"<AuditJob id='{self.job_id}' status='{self.status}' findings={len(self.findings)}>"
+        return f"<AuditJob id='{self.job_id}' status='{self.status}'>"
 
 
 class AuditReport:
-    """Consolidated summary report generated upon audit completion."""
+    """Consolidated audit outcome encompassing prioritized findings and metrics."""
 
     def __init__(
         self,
@@ -265,6 +353,56 @@ class AuditReport:
             counts[key] = counts.get(key, 0) + 1
         return counts
 
+    @property
+    def findings_by_priority(self) -> Dict[str, List[AuditFinding]]:
+        """Group findings into priority categories sorted by risk score within each."""
+        grouped: Dict[str, List[AuditFinding]] = {s.value: [] for s in Severity}
+        for f in self.findings:
+            key = f.severity.value if hasattr(f.severity, "value") else str(f.severity).lower()
+            if key in grouped:
+                grouped[key].append(f)
+            else:
+                grouped.setdefault(key, []).append(f)
+        for key in grouped:
+            grouped[key].sort(key=lambda x: x.risk_score, reverse=True)
+        return grouped
+
+    @property
+    def average_risk_score(self) -> float:
+        """Return average risk score across all findings."""
+        if not self.findings:
+            return 0.0
+        return round(sum(f.risk_score for f in self.findings) / len(self.findings), 2)
+
+    @property
+    def max_risk_score(self) -> float:
+        """Return the highest individual risk score in the report."""
+        if not self.findings:
+            return 0.0
+        return max(f.risk_score for f in self.findings)
+
+    def get_prioritized_findings(
+        self,
+        min_severity: Optional[Severity] = None,
+        min_risk_score: Optional[float] = None,
+    ) -> List[AuditFinding]:
+        """Return all findings sorted in descending order of risk score, with optional filtering."""
+        filtered = self.findings
+
+        if min_severity is not None:
+            min_weight = SEVERITY_WEIGHTS.get(min_severity.value, 0.0)
+            filtered = [
+                f for f in filtered
+                if SEVERITY_WEIGHTS.get(
+                    f.severity.value if hasattr(f.severity, "value") else str(f.severity).lower(), 0.0
+                ) >= min_weight
+            ]
+
+        if min_risk_score is not None:
+            filtered = [f for f in filtered if f.risk_score >= min_risk_score]
+
+        return sorted(filtered, key=lambda f: f.risk_score, reverse=True)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert audit report to dictionary."""
         return {
@@ -273,11 +411,13 @@ class AuditReport:
             "project_id": self.project_id,
             "generated_at": self.generated_at.isoformat(),
             "total_findings": self.total_findings,
+            "average_risk_score": self.average_risk_score,
+            "max_risk_score": self.max_risk_score,
             "findings_by_severity": self.findings_by_severity,
             "findings_by_category": self.findings_by_category,
             "summary": self.summary,
-            "findings": [f.to_dict() for f in self.findings],
+            "findings": [f.to_dict() for f in self.get_prioritized_findings()],
         }
 
     def __repr__(self) -> str:
-        return f"<AuditReport id='{self.report_id}' job='{self.job_id}' findings={self.total_findings}>"
+        return f"<AuditReport id='{self.report_id}' job='{self.job_id}' findings={self.total_findings} max_risk={self.max_risk_score}>"

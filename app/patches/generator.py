@@ -1,7 +1,9 @@
 import difflib
+from pathlib import Path
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+from app.core.models.audit import AuditFinding
 from app.core.models.patch import PatchDiff
 
 
@@ -131,3 +133,78 @@ class DiffGenerator:
             deletions_count=deletions,
             hunks=hunks,
         )
+
+
+class PatchGenerator(DiffGenerator):
+    """
+    US 14: Generates concrete remediated source code and unified diffs directly
+    from an AuditFinding's line span and suggested remediation code.
+    """
+
+    def apply_inline_remediation(
+        self,
+        original_code: str,
+        start_line: int,
+        end_line: int,
+        replacement_code: str,
+    ) -> str:
+        """Replace lines [start_line, end_line] (1-indexed) with replacement_code, preserving indentation."""
+        lines = original_code.splitlines()
+        total_lines = len(lines)
+        if total_lines == 0:
+            return replacement_code
+
+        s = max(1, min(start_line, total_lines))
+        e = max(s, min(end_line, total_lines))
+
+        # Detect leading indentation from original starting line
+        orig_first_line = lines[s - 1]
+        indent = re.match(r"^\s*", orig_first_line).group(0)
+
+        # Format replacement lines with matching indentation if replacement lines aren't already indented
+        rep_lines = replacement_code.splitlines()
+        formatted_rep = []
+        for line in rep_lines:
+            if not line.strip():
+                formatted_rep.append("")
+            elif not line.startswith(indent) and not line.startswith(" ") and not line.startswith("\t"):
+                formatted_rep.append(indent + line)
+            else:
+                formatted_rep.append(line)
+
+        new_lines = lines[:s - 1] + formatted_rep + lines[e:]
+        newline_char = "\r\n" if "\r\n" in original_code else "\n"
+        result = newline_char.join(new_lines)
+        if original_code.endswith("\n") and not result.endswith("\n"):
+            result += newline_char
+        return result
+
+    def generate_remediation(
+        self,
+        original_code: str,
+        finding: AuditFinding,
+        custom_remediation_code: Optional[str] = None,
+        file_name: str = "file",
+    ) -> Tuple[str, PatchDiff]:
+        """
+        Produce remediated source code and unified PatchDiff for an AuditFinding.
+        Returns: (modified_code, patch_diff)
+        """
+        code_to_apply = custom_remediation_code or finding.remediation_code
+        if not code_to_apply:
+            raise ValueError(f"No remediation code available for finding: {finding.title}")
+
+        modified_code = self.apply_inline_remediation(
+            original_code=original_code,
+            start_line=finding.start_line,
+            end_line=finding.end_line,
+            replacement_code=code_to_apply,
+        )
+
+        diff = self.generate_diff(
+            original_code=original_code,
+            modified_code=modified_code,
+            file_name=file_name,
+        )
+
+        return modified_code, diff
