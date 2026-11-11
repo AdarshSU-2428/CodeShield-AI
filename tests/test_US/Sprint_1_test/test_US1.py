@@ -7,8 +7,8 @@ def test_real_world_project_directory_selection():
     """Test selecting the actual CodeShield AI project directory on disk."""
     fs = LocalFileSystem()
     
-    # 1. Use the actual real-world project path with spaces
-    real_path = Path(r"C:\Users\ADARSH S SAHOO\Desktop\Engineering folder\CodeShield AI")
+    # 1. Dynamically resolve the actual real-world project path
+    real_path = Path(__file__).resolve().parents[3]
     
     # Validate with filesystem adapter
     assert fs.exists(real_path) is True, "Real-world project directory must exist"
@@ -39,7 +39,8 @@ def test_invalid_and_non_directory_selection():
 def test_real_filesystem_read_and_hashing():
     """Test reading and hashing a real project file."""
     fs = LocalFileSystem()
-    enums_file = Path(r"C:\Users\ADARSH S SAHOO\Desktop\Engineering folder\CodeShield AI\app\core\enums.py")
+    project_root = Path(__file__).resolve().parents[3]
+    enums_file = project_root / "app" / "core" / "enums.py"
     
     # Read text content
     content = fs.read_text(enums_file)

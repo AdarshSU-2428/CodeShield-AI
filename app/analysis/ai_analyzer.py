@@ -74,8 +74,15 @@ class AIVulnerabilityAnalyzer:
             '      "confidence": "HIGH|MEDIUM|LOW",\n'
             '      "start_line": <integer 1-indexed>,\n'
             '      "end_line": <integer 1-indexed>,\n'
+            '      "start_column": <integer 1-indexed or null>,\n'
+            '      "end_column": <integer 1-indexed or null>,\n'
             '      "code_snippet": "vulnerable code line(s)",\n'
             '      "recommendation": "Concrete remediation guidance.",\n'
+            '      "evidence": {"trigger": "vulnerable_symbol", "tainted_param": "param_name"},\n'
+            '      "risk_explanation": "Detailed explanation of why this code pattern creates an attack surface.",\n'
+            '      "exploit_scenario": "Concrete example of how an attacker would exploit this vulnerability in practice.",\n'
+            '      "remediation_code": "Concrete, production-ready replacement code snippet.",\n'
+            '      "remediation_steps": ["1. Step one", "2. Step two"],\n'
             '      "is_cross_file": true|false,\n'
             '      "related_files": ["path/to/related/file.py"]\n'
             "    }\n"
@@ -157,6 +164,28 @@ class AIVulnerabilityAnalyzer:
             snippet = item.get("code_snippet") or item.get("snippet")
             rec = item.get("recommendation") or "Review and sanitize input."
 
+            # User Story 12: Evidence & Explanations
+            raw_evidence = item.get("evidence")
+            if isinstance(raw_evidence, dict):
+                evidence_dict = raw_evidence
+            elif raw_evidence:
+                evidence_dict = {"trigger": str(raw_evidence)}
+            else:
+                evidence_dict = {"snippet": snippet} if snippet else {}
+
+            risk_exp = item.get("risk_explanation") or desc
+            exploit_scen = item.get("exploit_scenario")
+
+            # User Story 14: Secure Remediation Code & Steps
+            remediation_code = item.get("remediation_code")
+            raw_steps = item.get("remediation_steps")
+            if isinstance(raw_steps, list):
+                remediation_steps = [str(s) for s in raw_steps]
+            elif raw_steps:
+                remediation_steps = [str(raw_steps)]
+            else:
+                remediation_steps = [rec] if rec else []
+
             rel_path = str(source_file.relative_path or Path(source_file.file_path).name).replace("\\", "/")
 
             # Metadata tracking for cross-file auditing
@@ -183,6 +212,11 @@ class AIVulnerabilityAnalyzer:
                 recommendation=rec,
                 source="ai_llm",
                 metadata=meta,
+                evidence=evidence_dict,
+                risk_explanation=risk_exp,
+                exploit_scenario=exploit_scen,
+                remediation_code=remediation_code,
+                remediation_steps=remediation_steps,
             )
             if getattr(source_file, "content", None):
                 finding.extract_context_snippet(source_file.content)

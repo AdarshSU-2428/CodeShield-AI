@@ -1,6 +1,6 @@
 from pathlib import Path
 import re
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from app.core.enums import PatchStatus
 from app.core.interfaces.filesystem import FileSystem
@@ -58,16 +58,15 @@ class PatchService:
         file_path: Union[str, Path],
         modified_code: str,
         finding_id: Optional[str] = None,
-        description: Optional[str] = None,
+        description: str = "",
     ) -> Patch:
-        """Create a patch with unified Git-style diff representation for user review."""
+        """Create a patch proposal without modifying the underlying disk file."""
         target_path = Path(file_path).resolve()
-        
+
         if not self.filesystem.exists(target_path):
-            raise FileNotFoundError(f"Source file not found: {target_path}")
+            raise FileNotFoundError(f"Target file does not exist: {target_path}")
 
         original_code = self.filesystem.read_text(target_path)
-        
         diff = self.diff_generator.generate_diff(
             original_code=original_code,
             modified_code=modified_code,
@@ -162,6 +161,24 @@ class PatchService:
             patches = [p for p in patches if p.status == status]
         
         return patches
+
+    def validate_patch(self, patch_id: str) -> Tuple[bool, Optional[str]]:
+        """
+        User Story 20: Validate candidate patch syntax in-memory without mutating disk.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return self.applier.validator.validate_patch_candidate(patch)
+
+    def validate_and_apply(self, patch_id: str) -> bool:
+        """
+        User Story 20: Explicitly validate candidate patch syntax and apply atomically to disk.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return self.applier.validate_and_apply(patch)
 
     def apply_patch(self, patch_id: str) -> bool:
         """Safely apply a proposed patch to disk with verified backup."""

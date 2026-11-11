@@ -1,6 +1,7 @@
 import fnmatch
 from pathlib import Path
 from typing import List, Optional, Set
+from app.analysis.language_detector import LanguageDetector, default_language_detector
 from app.core.enums import FileStatus, Language
 from app.core.interfaces.filesystem import FileSystem
 from app.core.models.code import SourceFile
@@ -8,15 +9,19 @@ from app.core.models.project import Project
 from app.infrastructure.config import AppConfig, config as default_config
 from app.infrastructure.filesystem import LocalFileSystem
 
+
 class RepositoryScanner:
     """Discovers, filters, and classifies source files within a project directory."""
+
     def __init__(
         self,
         filesystem: Optional[FileSystem] = None,
         config: Optional[AppConfig] = None,
+        language_detector: Optional[LanguageDetector] = None,
     ):
         self.fs = filesystem if filesystem else LocalFileSystem()
         self.config = config if config else default_config
+        self.language_detector = language_detector if language_detector else default_language_detector
 
     def should_ignore_dir(self, dir_name: str) -> bool:
         """Check if a directory name is in the ignore list."""
@@ -37,10 +42,10 @@ class RepositoryScanner:
         root_path = project.root_path
         if not self.fs.is_directory(root_path):
             return []
+
         discovered_files: List[SourceFile] = []
         total_count = 0
         supported_count = 0
-        ext_map = self.config.extension_to_language
         max_size = self.config.max_file_size_bytes
         
         # Traverse directory recursively using os.walk semantics with pathlib
@@ -51,24 +56,37 @@ class RepositoryScanner:
                 total_count += 1
                 if self.should_ignore_file(file_name):
                     continue
+
                 abs_path = current_dir / file_name
                 try:
                     rel_path = abs_path.relative_to(root_path)
                 except ValueError:
                     rel_path = Path(file_name)
+
                 ext = abs_path.suffix.lower()
-                language = ext_map.get(ext, Language.UNKNOWN)
+                language = self.language_detector.detect_language(file_path=abs_path)
+
+                # Disambiguate .h or extensionless files using content inspection
+                if language in (Language.UNKNOWN, Language.C) and (not ext or ext == ".h"):
+                    try:
+                        snippet = self.fs.read_text(abs_path)[:1024]
+                        language = self.language_detector.detect_language(file_path=abs_path, content=snippet)
+                    except Exception:
+                        pass
+
                 # Check file size
                 try:
                     size_bytes = abs_path.stat().st_size
                 except (OSError, FileNotFoundError):
                     size_bytes = 0
+
                 # Determine file status & support
                 if language == Language.UNKNOWN or size_bytes > max_size:
                     status = FileStatus.UNSUPPORTED
                 else:
                     status = FileStatus.NEW
                     supported_count += 1
+
                 # Compute content hash for supported files
                 content_hash = None
                 if status != FileStatus.UNSUPPORTED:
