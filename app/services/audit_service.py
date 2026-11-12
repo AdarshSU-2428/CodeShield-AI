@@ -15,6 +15,7 @@ from app.core.models.audit import AuditFinding, AuditJob, AuditProgress, AuditRe
 from app.core.models.code import SourceFile
 from app.core.models.project import Project
 from app.infrastructure.filesystem import LocalFileSystem
+from app.infrastructure.logger import logger
 
 
 class AuditService:
@@ -138,6 +139,7 @@ class AuditService:
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc)
         all_findings: List[AuditFinding] = []
+        audit_warnings: List[str] = []
 
         try:
             # -------------------------------------------------------------
@@ -251,13 +253,19 @@ class AuditService:
                 )
                 all_findings.extend(quality_findings)
 
-                # 4. Optional AI Semantic Vulnerability Analysis
+                # 4. Optional AI Semantic Vulnerability Analysis (with graceful degradation)
                 if self._ai_analyzer and hasattr(self._ai_analyzer, "analyze_file"):
                     try:
                         ai_findings = self._ai_analyzer.analyze_file(sf)
                         all_findings.extend(ai_findings)
-                    except Exception:
-                        pass
+                        if getattr(self._ai_analyzer, "last_error", None):
+                            audit_warnings.append(
+                                f"AI degraded on '{sf.relative_path}': {self._ai_analyzer.last_error}"
+                            )
+                    except Exception as ai_exc:
+                        warn_msg = f"AI analyzer failed cleanly on '{sf.relative_path}': {ai_exc}"
+                        logger.warning(warn_msg)
+                        audit_warnings.append(warn_msg)
 
             # Check if job was cancelled during parsing/analysis
             if job.status == JobStatus.CANCELLED:
@@ -307,12 +315,15 @@ class AuditService:
                 f"Audit completed across {total_files} files with {len(all_findings)} finding(s) detected. "
                 f"Findings prioritized by risk score."
             )
+            if audit_warnings:
+                summary_text += f" ({len(audit_warnings)} AI warning(s) logged; static analysis complete.)"
 
             report = AuditReport(
                 job_id=job.job_id,
                 project_id=project.project_id,
                 findings=all_findings,
                 summary=summary_text,
+                warnings=audit_warnings,
             )
 
             self._reports[job.job_id] = report

@@ -14,10 +14,11 @@ except ImportError:
 
 from app.core.interfaces.llm import LLMClient, LLMResponse
 from app.infrastructure.config import config
+from app.infrastructure.logger import logger
 
 
 class GroqLLMClient(LLMClient):
-    """Concrete Groq LLM adapter with retry resilience and automated fallback."""
+    """Concrete Groq LLM adapter with retry resilience, timeout recovery, and automated fallback."""
 
     def __init__(
         self,
@@ -49,7 +50,7 @@ class GroqLLMClient(LLMClient):
         )
         self._api_key: str = (api_key or os.getenv("GROQ_API_KEY", "")).strip()
         self._max_retries: int = max(0, max_retries)
-        self._retry_delay: float = max(0.1, retry_delay)
+        self._retry_delay: float = max(0.05, retry_delay)
 
         # Injectable client for testing or direct initialization
         if client is not None:
@@ -79,11 +80,28 @@ class GroqLLMClient(LLMClient):
         return bool(self._client is not None and self._api_key)
 
     def _clean_markdown_json(self, raw_text: str) -> str:
-        """Strip markdown code block fences and extract the cleanest JSON string."""
+        """Strip markdown code block fences and extract the cleanest JSON object or array."""
+        if not raw_text:
+            return ""
         text = raw_text.strip()
+
+        # 1. Try fenced markdown block ```json ... ```
         match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
         if match:
             return match.group(1).strip()
+
+        # 2. If conversational prose surrounds raw JSON, extract outermost {...} or [...]
+        obj_start = text.find("{")
+        obj_end = text.rfind("}")
+        arr_start = text.find("[")
+        arr_end = text.rfind("]")
+
+        if obj_start != -1 and obj_end > obj_start:
+            if arr_start == -1 or obj_start < arr_start:
+                return text[obj_start : obj_end + 1].strip()
+        if arr_start != -1 and arr_end > arr_start:
+            return text[arr_start : arr_end + 1].strip()
+
         return text
 
     def _call_groq_api(
@@ -93,7 +111,7 @@ class GroqLLMClient(LLMClient):
         temperature: float,
         max_tokens: int,
     ) -> Any:
-        """Single model attempt with exponential backoff on transient errors."""
+        """Single model attempt with exponential backoff on transient cloud/network errors."""
         attempts = 0
         current_delay = self._retry_delay
 
@@ -105,8 +123,11 @@ class GroqLLMClient(LLMClient):
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-            except (RateLimitError, APIConnectionError) as exc:
+            except (RateLimitError, APIConnectionError, TimeoutError, ConnectionError, OSError) as exc:
                 attempts += 1
+                logger.warning(
+                    f"Transient cloud error on '{model}' (attempt {attempts}/{self._max_retries}): {exc}"
+                )
                 if attempts > self._max_retries:
                     raise RuntimeError(
                         f"Groq API call to '{model}' failed after {self._max_retries} retries: {exc}"
@@ -114,6 +135,7 @@ class GroqLLMClient(LLMClient):
                 time.sleep(current_delay)
                 current_delay *= 2.0
             except APIError as exc:
+                logger.error(f"Groq API error on '{model}': {exc}")
                 raise RuntimeError(f"Groq API error on '{model}': {exc}") from exc
 
     def _execute_chat_completion(
@@ -131,9 +153,10 @@ class GroqLLMClient(LLMClient):
                 max_tokens=max_tokens,
             )
         except Exception as primary_error:
-            # If fallback model is different from primary, attempt failover
+            logger.warning(f"Primary model '{self.model_name}' failed: {primary_error}")
             if self._fallback_model and self._fallback_model != self.model_name:
                 try:
+                    logger.info(f"Attempting failover to fallback model '{self._fallback_model}'...")
                     return self._call_groq_api(
                         model=self._fallback_model,
                         messages=messages,
@@ -141,6 +164,7 @@ class GroqLLMClient(LLMClient):
                         max_tokens=self._fallback_max_tokens,
                     )
                 except Exception as fallback_error:
+                    logger.error(f"Fallback model '{self._fallback_model}' also failed: {fallback_error}")
                     raise RuntimeError(
                         f"Both primary model ('{self.model_name}') and fallback model "
                         f"('{self._fallback_model}') failed. Primary error: {primary_error}. "
@@ -154,7 +178,7 @@ class GroqLLMClient(LLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """Send chat messages and return the raw LLM response."""
+        """Send chat messages and return the raw LLM response safely."""
         if not self.is_available():
             raise RuntimeError(
                 "Groq LLM is not available. Please configure the GROQ_API_KEY environment variable."
@@ -169,8 +193,13 @@ class GroqLLMClient(LLMClient):
             max_tokens=effective_tokens,
         )
 
+        # Guard against malformed/empty cloud response objects
+        if completion is None or not getattr(completion, "choices", None):
+            raise RuntimeError("Cloud LLM returned an empty or malformed response without choices.")
+
         choice = completion.choices[0]
-        content = choice.message.content or ""
+        message_obj = getattr(choice, "message", None)
+        content = (getattr(message_obj, "content", None) or "") if message_obj is not None else ""
 
         usage = getattr(completion, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
@@ -200,9 +229,18 @@ class GroqLLMClient(LLMClient):
         )
         cleaned_json = self._clean_markdown_json(response.content)
 
+        if not cleaned_json:
+            raise ValueError("LLM returned empty content when JSON was expected.")
+
         try:
-            return json.loads(cleaned_json)
+            parsed = json.loads(cleaned_json)
+            if isinstance(parsed, list):
+                return {"vulnerabilities": parsed}
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
+            return parsed
         except json.JSONDecodeError as exc:
+            logger.warning(f"Malformed JSON from LLM: {exc}")
             raise ValueError(
-                f"Failed to parse LLM response as JSON. Content received: '{cleaned_json}'"
+                f"Failed to parse LLM response as JSON. Content received: '{cleaned_json[:200]}'"
             ) from exc

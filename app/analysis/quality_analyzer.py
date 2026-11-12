@@ -188,16 +188,24 @@ class CodeQualityAnalyzer:
         return findings
 
 
+ENTRYPOINT_NAMES: Set[str] = {
+    "main", "app", "index", "cli", "server", "run", "manage", "__init__", "conftest", "setup",
+}
+
 class ArchitecturalSmellDetector:
-    """Detects system-wide architectural smells: circular dependencies and God classes."""
+    """Detects system-wide architectural smells using dependency graphs and structural metrics."""
 
     def __init__(
         self,
         cross_file_resolver: Optional[CrossFileContextResolver] = None,
         max_god_class_lines: int = 250,
+        max_fan_out: int = 5,
+        hub_coupling_threshold: int = 3,
     ):
         self.resolver = cross_file_resolver if cross_file_resolver is not None else CrossFileContextResolver()
         self.max_god_class_lines: int = max_god_class_lines
+        self.max_fan_out: int = max_fan_out
+        self.hub_coupling_threshold: int = hub_coupling_threshold
 
     def detect_circular_dependencies(self, files: List[SourceFile]) -> List[AuditFinding]:
         """Detect circular import cycles (e.g. A -> B -> A) across project source files."""
@@ -230,14 +238,13 @@ class ArchitecturalSmellDetector:
 
             for neighbor in adj.get(current, []):
                 if visited.get(neighbor) == 1:
-                    # Found cycle: neighbor is in current recursion stack
                     cycle_start_idx = path.index(neighbor)
                     cycle = path[cycle_start_idx:]
                     sorted_cycle = tuple(sorted(cycle))
 
                     if sorted_cycle not in reported_cycles and len(cycle) >= 2:
                         reported_cycles.add(sorted_cycle)
-                        
+
                         rel_cycle_names = [
                             file_map[p].relative_path or Path(file_map[p].file_path).name
                             for p in cycle
@@ -254,11 +261,18 @@ class ArchitecturalSmellDetector:
                             severity=Severity.HIGH,
                             confidence=Confidence.HIGH,
                             file_path=file_map[current].file_path,
+                            relative_file_path=str(file_map[current].relative_path or Path(file_map[current].file_path).name).replace("\\", "/"),
                             start_line=1,
                             end_line=1,
                             code_snippet=cycle_str,
                             recommendation="Break the cycle by applying Dependency Inversion, using interfaces, or extracting shared logic to a separate module.",
                             source="architectural_analyzer",
+                            evidence={"cycle_path": cycle_str, "cycle_length": len(cycle)},
+                            risk_explanation="Cyclic module graphs hinder modular deployment, create tight coupling, and risk ImportError at startup.",
+                            remediation_steps=[
+                                "Extract shared types or interfaces into a separate base module.",
+                                "Use Dependency Injection instead of mutual concrete imports.",
+                            ],
                             metadata={"cycle_files": [str(n) for n in rel_cycle_names]},
                         ))
 
@@ -282,7 +296,6 @@ class ArchitecturalSmellDetector:
             lines = sf.content.splitlines()
             total_lines = len(lines)
 
-            # Heuristic: File/class contains more lines than threshold
             if total_lines >= self.max_god_class_lines:
                 rel_name = sf.relative_path or Path(sf.file_path).name
                 findings.append(AuditFinding(
@@ -295,11 +308,134 @@ class ArchitecturalSmellDetector:
                     severity=Severity.MEDIUM,
                     confidence=Confidence.HIGH,
                     file_path=sf.file_path,
+                    relative_file_path=rel_name,
                     start_line=1,
                     end_line=total_lines,
                     code_snippet=f"# Module length: {total_lines} lines",
                     recommendation="Decompose this large class/module into smaller, focused service or repository components.",
                     source="architectural_analyzer",
+                    evidence={"line_count": total_lines, "threshold": self.max_god_class_lines},
+                    risk_explanation="Large monolithic modules accumulate unrelated responsibilities, slowing reviews and increasing regression risk.",
+                    remediation_steps=[
+                        "Identify cohesive groups of methods and extract them into dedicated services.",
+                        "Separate data persistence, validation, and orchestration logic.",
+                    ],
+                ))
+
+        return findings
+
+    def detect_excessive_fan_out(self, files: List[SourceFile], graph: Optional[Any] = None) -> List[AuditFinding]:
+        """Detect Hub / Octopus modules that depend on too many other repository modules."""
+        findings: List[AuditFinding] = []
+        dep_graph = graph if graph is not None else self.resolver.build_dependency_graph(files)
+
+        for sf in files:
+            metrics = dep_graph.get_coupling_metrics(sf.file_path)
+            fan_out = metrics.get("fan_out", 0)
+            if fan_out >= self.max_fan_out:
+                deps = dep_graph.get_dependencies(sf.file_path)
+                rel_name = sf.relative_path or Path(sf.file_path).name
+                findings.append(AuditFinding(
+                    title=f"Excessive Fan-Out / Hub Module ({fan_out} dependencies)",
+                    description=(
+                        f"Module '{rel_name}' directly depends on {fan_out} internal modules "
+                        f"(threshold: {self.max_fan_out}). High efferent coupling makes it brittle to upstream changes."
+                    ),
+                    category=FindingCategory.ARCHITECTURE,
+                    severity=Severity.MEDIUM,
+                    confidence=Confidence.HIGH,
+                    file_path=sf.file_path,
+                    relative_file_path=rel_name,
+                    start_line=1,
+                    end_line=1,
+                    code_snippet=f"Dependencies ({fan_out}): {', '.join(deps[:5])}",
+                    recommendation="Reduce outgoing dependencies by introducing a Facade, Mediator, or splitting orchestration responsibilities.",
+                    source="architectural_analyzer",
+                    evidence={"fan_out": fan_out, "instability": metrics.get("instability", 0.0), "dependencies": deps},
+                    risk_explanation="Modules with high efferent coupling break frequently whenever any dependency changes its contract.",
+                    remediation_steps=[
+                        "Group related dependencies behind a domain facade.",
+                        "Split multi-purpose orchestrators into focused use-case handlers.",
+                    ],
+                ))
+
+        return findings
+
+    def detect_high_coupling_hubs(self, files: List[SourceFile], graph: Optional[Any] = None) -> List[AuditFinding]:
+        """Detect fragile bottleneck hubs having both high Fan-In and high Fan-Out."""
+        findings: List[AuditFinding] = []
+        dep_graph = graph if graph is not None else self.resolver.build_dependency_graph(files)
+
+        for sf in files:
+            metrics = dep_graph.get_coupling_metrics(sf.file_path)
+            fan_in = metrics.get("fan_in", 0)
+            fan_out = metrics.get("fan_out", 0)
+            if fan_in >= self.hub_coupling_threshold and fan_out >= self.hub_coupling_threshold:
+                rel_name = sf.relative_path or Path(sf.file_path).name
+                findings.append(AuditFinding(
+                    title=f"High-Coupling Bottleneck Hub (Fan-In={fan_in}, Fan-Out={fan_out})",
+                    description=(
+                        f"Module '{rel_name}' acts as a central bottleneck with {fan_in} incoming dependents "
+                        f"and {fan_out} outgoing dependencies."
+                    ),
+                    category=FindingCategory.ARCHITECTURE,
+                    severity=Severity.HIGH,
+                    confidence=Confidence.HIGH,
+                    file_path=sf.file_path,
+                    relative_file_path=rel_name,
+                    start_line=1,
+                    end_line=1,
+                    code_snippet=f"Fan-In={fan_in}, Fan-Out={fan_out}, Instability={metrics.get('instability', 0.0)}",
+                    recommendation="Decouple high-impact core modules using abstract interfaces so dependents do not transitively break.",
+                    source="architectural_analyzer",
+                    evidence={"fan_in": fan_in, "fan_out": fan_out, "instability": metrics.get("instability", 0.0)},
+                    risk_explanation="Changes to a bottleneck hub ripple across many upstream dependents while also being sensitive to downstream changes.",
+                    remediation_steps=[
+                        "Apply the Stable Dependencies Principle: core hubs should depend only on stable abstractions.",
+                        "Decouple callers via event buses or interface contracts.",
+                    ],
+                ))
+
+        return findings
+
+    def detect_orphaned_modules(self, files: List[SourceFile], graph: Optional[Any] = None) -> List[AuditFinding]:
+        """Detect isolated modules in multi-file repos with zero incoming and zero outgoing links."""
+        findings: List[AuditFinding] = []
+        if len(files) < 3:
+            return findings
+
+        dep_graph = graph if graph is not None else self.resolver.build_dependency_graph(files)
+
+        for sf in files:
+            stem = Path(sf.file_path).stem.lower()
+            if stem in ENTRYPOINT_NAMES or stem.startswith("test_"):
+                continue
+
+            metrics = dep_graph.get_coupling_metrics(sf.file_path)
+            if metrics.get("fan_in", 0) == 0 and metrics.get("fan_out", 0) == 0:
+                rel_name = sf.relative_path or Path(sf.file_path).name
+                findings.append(AuditFinding(
+                    title=f"Orphaned / Unreferenced Module ({rel_name})",
+                    description=(
+                        f"Module '{rel_name}' has zero incoming or outgoing relationships in the repository dependency graph. "
+                        "It may represent dead code or an unintegrated component."
+                    ),
+                    category=FindingCategory.ARCHITECTURE,
+                    severity=Severity.LOW,
+                    confidence=Confidence.MEDIUM,
+                    file_path=sf.file_path,
+                    relative_file_path=rel_name,
+                    start_line=1,
+                    end_line=1,
+                    code_snippet=f"# Isolated module: {rel_name}",
+                    recommendation="Verify whether this module is dynamically loaded; otherwise remove dead code or integrate it cleanly.",
+                    source="architectural_analyzer",
+                    evidence={"fan_in": 0, "fan_out": 0},
+                    risk_explanation="Orphaned modules increase maintenance overhead and may harbor outdated, unpatched logic.",
+                    remediation_steps=[
+                        "Confirm if the file is invoked dynamically or via CLI.",
+                        "Delete obsolete modules to reduce attack surface and clutter.",
+                    ],
                 ))
 
         return findings
@@ -307,6 +443,11 @@ class ArchitecturalSmellDetector:
     def evaluate_architecture(self, files: List[SourceFile]) -> List[AuditFinding]:
         """Run complete architectural smell detection across all project files."""
         findings: List[AuditFinding] = []
+        dep_graph = self.resolver.build_dependency_graph(files)
+
         findings.extend(self.detect_circular_dependencies(files))
         findings.extend(self.detect_god_classes(files))
+        findings.extend(self.detect_excessive_fan_out(files, graph=dep_graph))
+        findings.extend(self.detect_high_coupling_hubs(files, graph=dep_graph))
+        findings.extend(self.detect_orphaned_modules(files, graph=dep_graph))
         return findings

@@ -10,6 +10,7 @@ from app.core.models.audit import (
 )
 from app.core.models.code import CodeComponent, SourceFile
 from app.infrastructure.llm import GroqLLMClient
+from app.infrastructure.logger import logger
 
 if TYPE_CHECKING:
     from app.analysis.cross_file import CrossFileContextResolver
@@ -29,6 +30,8 @@ class AIVulnerabilityAnalyzer:
         self.cross_file_resolver: Optional["CrossFileContextResolver"] = cross_file_resolver
         self.max_file_size_chars: int = max_file_size_chars
         self.temperature: float = temperature
+        self.last_error: Optional[str] = None
+        self.warnings: List[str] = []
 
     def _parse_severity(self, raw_sev: Any) -> Severity:
         """Safely parse arbitrary severity string into Severity enum."""
@@ -49,6 +52,16 @@ class AIVulnerabilityAnalyzer:
             if conf.value == val or conf.name.lower() == val or conf.value in val:
                 return conf
         return Confidence.HIGH
+
+    def _safe_int(self, val: Any, default: int, minimum: int = 1) -> int:
+        """Safely coerce an untrusted AI integer field without crashing on strings, bools, or NaNs."""
+        if val is None or isinstance(val, bool):
+            return default
+        try:
+            parsed = int(float(val))
+            return max(minimum, parsed)
+        except (ValueError, TypeError, OverflowError):
+            return default
 
     def build_messages(
         self,
@@ -115,19 +128,30 @@ class AIVulnerabilityAnalyzer:
 
     def _parse_findings(
         self,
-        raw_response: Dict[str, Any],
+        raw_response: Any,
         source_file: SourceFile,
         context_snippets: Optional[List[Dict[str, Any]]] = None,
     ) -> List[AuditFinding]:
-        """Convert structured JSON dictionary into normalized AuditFinding objects."""
-        findings: List[AuditFinding] = []
-        raw_list = raw_response.get("vulnerabilities") or raw_response.get("findings") or []
-        
+        """Convert structured JSON dictionary or list into normalized AuditFinding objects safely."""
+        if raw_response is None:
+            return []
+
         if isinstance(raw_response, list):
             raw_list = raw_response
+        elif isinstance(raw_response, dict):
+            raw_list = raw_response.get("vulnerabilities")
+            if raw_list is None:
+                raw_list = raw_response.get("findings")
+            if raw_list is None:
+                raw_list = []
+        else:
+            return []
 
-        # Extract available related filenames for cross-file attribution
-        context_files = [c.get("file") for c in (context_snippets or []) if c.get("file")]
+        if not isinstance(raw_list, list):
+            return []
+
+        findings: List[AuditFinding] = []
+        context_files = [c.get("file") for c in (context_snippets or []) if isinstance(c, dict) and c.get("file")]
 
         for item in raw_list:
             if not isinstance(item, dict):
@@ -138,31 +162,23 @@ class AIVulnerabilityAnalyzer:
             cwe_id = str(item.get("cwe_id")).strip() if item.get("cwe_id") else None
             sev = self._parse_severity(item.get("severity", "medium"))
             conf = self._parse_confidence(item.get("confidence", "high"))
-            
-            try:
-                start_line = int(item.get("start_line") or item.get("line_number") or 1)
-            except (ValueError, TypeError):
-                start_line = 1
 
-            try:
-                end_line = int(item.get("end_line") or start_line)
-            except (ValueError, TypeError):
-                end_line = start_line
+            start_line = self._safe_int(item.get("start_line") or item.get("line_number"), default=1, minimum=1)
+            end_line = self._safe_int(item.get("end_line"), default=start_line, minimum=start_line)
 
-            try:
-                start_col = int(item.get("start_column") or item.get("column") or 0)
-                start_col = start_col if start_col > 0 else None
-            except (ValueError, TypeError):
-                start_col = None
+            raw_sc = self._safe_int(item.get("start_column") or item.get("column"), default=0, minimum=0)
+            start_col = raw_sc if raw_sc > 0 else None
 
-            try:
-                end_col = int(item.get("end_column") or start_col or 0)
-                end_col = end_col if end_col > 0 else None
-            except (ValueError, TypeError):
-                end_col = None
+            raw_ec = self._safe_int(item.get("end_column"), default=raw_sc, minimum=0)
+            end_col = raw_ec if raw_ec > 0 else None
 
             snippet = item.get("code_snippet") or item.get("snippet")
+            if snippet is not None and not isinstance(snippet, str):
+                snippet = str(snippet)
+
             rec = item.get("recommendation") or "Review and sanitize input."
+            if not isinstance(rec, str):
+                rec = str(rec)
 
             # User Story 12: Evidence & Explanations
             raw_evidence = item.get("evidence")
@@ -174,10 +190,18 @@ class AIVulnerabilityAnalyzer:
                 evidence_dict = {"snippet": snippet} if snippet else {}
 
             risk_exp = item.get("risk_explanation") or desc
+            if risk_exp is not None and not isinstance(risk_exp, str):
+                risk_exp = str(risk_exp)
+
             exploit_scen = item.get("exploit_scenario")
+            if exploit_scen is not None and not isinstance(exploit_scen, str):
+                exploit_scen = str(exploit_scen)
 
             # User Story 14: Secure Remediation Code & Steps
             remediation_code = item.get("remediation_code")
+            if remediation_code is not None and not isinstance(remediation_code, str):
+                remediation_code = str(remediation_code)
+
             raw_steps = item.get("remediation_steps")
             if isinstance(raw_steps, list):
                 remediation_steps = [str(s) for s in raw_steps]
@@ -193,7 +217,8 @@ class AIVulnerabilityAnalyzer:
             is_cross_file = bool(item.get("is_cross_file") or context_files)
             if is_cross_file:
                 meta["cross_file"] = True
-                meta["related_files"] = item.get("related_files") or context_files
+                raw_rel = item.get("related_files")
+                meta["related_files"] = raw_rel if isinstance(raw_rel, list) else context_files
 
             finding = AuditFinding(
                 title=title,
@@ -233,6 +258,8 @@ class AIVulnerabilityAnalyzer:
         project_id: Optional[str] = None,
     ) -> List[AuditFinding]:
         """Perform semantic and cross-file security vulnerability analysis on a source file."""
+        self.last_error = None
+
         if not source_file.content or not source_file.content.strip():
             return []
 
@@ -242,11 +269,15 @@ class AIVulnerabilityAnalyzer:
         # Automatically resolve cross-file dependencies if resolver & project files are provided
         effective_context = context_snippets
         if effective_context is None and self.cross_file_resolver and all_project_files:
-            effective_context = self.cross_file_resolver.bundle_cross_file_context(
-                source_file=source_file,
-                all_project_files=all_project_files,
-                project_id=project_id,
-            )
+            try:
+                effective_context = self.cross_file_resolver.bundle_cross_file_context(
+                    source_file=source_file,
+                    all_project_files=all_project_files,
+                    project_id=project_id,
+                )
+            except Exception as ctx_err:
+                logger.warning(f"Cross-file context bundling failed cleanly: {ctx_err}")
+                effective_context = None
 
         messages = self.build_messages(source_file, context_snippets=effective_context)
 
@@ -255,12 +286,13 @@ class AIVulnerabilityAnalyzer:
                 messages=messages,
                 temperature=self.temperature,
             )
-            if not isinstance(raw_response, dict):
-                return []
-
             return self._parse_findings(raw_response, source_file, context_snippets=effective_context)
 
-        except Exception:
+        except Exception as exc:
+            err_msg = f"AI analysis degraded gracefully for '{source_file.relative_path}': {exc}"
+            logger.warning(err_msg)
+            self.last_error = str(exc)
+            self.warnings.append(err_msg)
             return []
 
     def analyze_component(
@@ -281,7 +313,7 @@ class AIVulnerabilityAnalyzer:
         )
 
         findings = self.analyze_file(virtual_file)
-        
+
         # Adjust line numbers relative to the enclosing component start line
         for finding in findings:
             offset = component.start_line - 1
