@@ -1,10 +1,12 @@
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import uuid
 from app.core.enums import FileStatus, Language
 
+
 class SourceFile:
     """Represents a discovered source file inside a project workspace."""
+
     def __init__(
         self,
         file_path: Union[str, Path],
@@ -38,11 +40,13 @@ class SourceFile:
     def __repr__(self) -> str:
         return f"<SourceFile path='{self.relative_path}' lang={self.language.value} status={self.status.value}>"
 
+
 class CodeComponent:
     """
     Represents a structural code component extracted from an AST
-    (e.g., class, function, method).
+    (e.g., class, function, method) with standardized cross-language metadata.
     """
+
     def __init__(
         self,
         name: str,
@@ -54,6 +58,7 @@ class CodeComponent:
         parent_name: Optional[str] = None,
         language: Language = Language.UNKNOWN,
         component_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         self.name = name
         self.component_type = component_type  
@@ -65,13 +70,55 @@ class CodeComponent:
         self.language = language
         self.component_id = component_id if component_id else str(uuid.uuid4())
 
+        # User Story 26: Common normalized metadata schema across all languages
+        base_meta: Dict[str, Any] = {
+            "language": language.value if hasattr(language, "value") else str(language),
+            "component_type": component_type,
+            "line_count": max(1, end_line - start_line + 1),
+            "signature": "",
+            "parameters": [],
+            "parameter_count": 0,
+            "visibility": "public",
+            "is_async": False,
+            "docstring": None,
+            "decorators": [],
+        }
+        if metadata:
+            base_meta.update(metadata)
+            if "parameters" in base_meta and "parameter_count" not in metadata:
+                base_meta["parameter_count"] = len(base_meta["parameters"])
+        self.metadata: Dict[str, Any] = base_meta
+
+    @property
+    def line_count(self) -> int:
+        """Return total number of lines spanned by this component."""
+        return max(1, self.end_line - self.start_line + 1)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize CodeComponent and its normalized metadata to a dictionary."""
+        return {
+            "component_id": self.component_id,
+            "name": self.name,
+            "component_type": self.component_type,
+            "file_path": Path(self.file_path).as_posix() if self.file_path else "",
+            "parent_name": self.parent_name,
+            "language": self.language.value if hasattr(self.language, "value") else str(self.language),
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "line_count": self.line_count,
+            "source_content": self.source_content,
+            "metadata": self.metadata,
+        }
+
     def __repr__(self) -> str:
         return f"<CodeComponent {self.component_type} '{self.name}' lines={self.start_line}-{self.end_line}>"
+
 
 class CodeChunk:
     """
     Represents a retrieval chunk derived from code components for local RAG.
     """
+
     def __init__(
         self,
         content: str,

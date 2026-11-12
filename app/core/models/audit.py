@@ -325,6 +325,7 @@ class AuditReport:
         report_id: Optional[str] = None,
         generated_at: Optional[datetime] = None,
         summary: str = "",
+        warnings: Optional[List[str]] = None,
     ):
         self.report_id = report_id if report_id else str(uuid.uuid4())
         self.job_id = str(job_id)
@@ -332,6 +333,7 @@ class AuditReport:
         self.findings = findings if findings else []
         self.generated_at = generated_at if generated_at else datetime.now(timezone.utc)
         self.summary = summary
+        self.warnings: List[str] = list(warnings) if warnings else []
 
     @property
     def total_findings(self) -> int:
@@ -416,6 +418,7 @@ class AuditReport:
             "findings_by_severity": self.findings_by_severity,
             "findings_by_category": self.findings_by_category,
             "summary": self.summary,
+            "warnings": self.warnings,
             "findings": [f.to_dict() for f in self.get_prioritized_findings()],
         }
 

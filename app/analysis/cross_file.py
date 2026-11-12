@@ -2,6 +2,7 @@ import ast
 import os
 from pathlib import Path
 import re
+from collections import deque
 from typing import Any, Dict, List, Optional, Set, Union
 
 from app.core.enums import Language
@@ -17,6 +18,173 @@ PYTHON_BUILTINS: Set[str] = {
     "issubclass", "getattr", "setattr", "hasattr", "enumerate", "zip", "map", "filter",
     "sorted", "reversed", "super", "format", "id", "type", "round", "repr", "dir", "exec", "eval",
 }
+
+class DependencyGraph:
+    """
+    Repository-level dependency graph tracking file/component relationships,
+    coupling metrics (Fan-In, Fan-Out, Instability), and transitive impact analysis.
+    """
+
+    def __init__(self):
+        self.nodes: Dict[str, Dict[str, Any]] = {}
+        self.edges: List[Dict[str, Any]] = []
+        self.adjacency: Dict[str, Set[str]] = {}
+        self.reverse_adjacency: Dict[str, Set[str]] = {}
+        self._edge_keys: Set[tuple] = set()
+
+    def _norm(self, path: Union[str, Path]) -> str:
+        return Path(path).as_posix().lower()
+
+    def _resolve_key(self, file_path: Union[str, Path]) -> Optional[str]:
+        """Resolve an absolute, relative, or filename path to its canonical node key."""
+        norm = self._norm(file_path)
+        norm_space = norm.replace("_", " ")
+        if norm in self.nodes:
+            return norm
+        for key, info in self.nodes.items():
+            rel = str(info.get("relative_path", "")).replace("\\", "/").lower()
+            rel_space = rel.replace("_", " ")
+            if (
+                rel == norm
+                or rel_space == norm_space
+                or key.endswith(f"/{norm}")
+                or rel.endswith(f"/{norm}")
+                or rel_space.endswith(f"/{norm_space}")
+            ):
+                return key
+        return None
+
+    def add_node(
+        self,
+        file_path: Union[str, Path],
+        relative_path: Optional[str] = None,
+        language: Optional[Language] = None,
+    ) -> str:
+        key = self._norm(file_path)
+        if key not in self.nodes:
+            rel_str = str(relative_path or Path(file_path).name).replace("\\", "/")
+            self.nodes[key] = {
+                "file_path": Path(file_path).as_posix(),
+                "relative_path": rel_str,
+                "language": language.value if hasattr(language, "value") else str(language or "unknown"),
+                "fan_in": 0,
+                "fan_out": 0,
+                "instability": 0.0,
+            }
+            self.adjacency.setdefault(key, set())
+            self.reverse_adjacency.setdefault(key, set())
+        return key
+
+    def add_edge(
+        self,
+        source_path: Union[str, Path],
+        target_path: Union[str, Path],
+        relation: str = "imports",
+        symbol: Optional[str] = None,
+    ) -> None:
+        src_key = self._norm(source_path)
+        tgt_key = self._norm(target_path)
+        if src_key == tgt_key:
+            return
+        if src_key not in self.nodes:
+            self.add_node(source_path)
+        if tgt_key not in self.nodes:
+            self.add_node(target_path)
+
+        edge_sig = (src_key, tgt_key, relation, symbol or "")
+        if edge_sig not in self._edge_keys:
+            self._edge_keys.add(edge_sig)
+            self.edges.append({
+                "source": self.nodes[src_key]["relative_path"],
+                "target": self.nodes[tgt_key]["relative_path"],
+                "source_path": self.nodes[src_key]["file_path"],
+                "target_path": self.nodes[tgt_key]["file_path"],
+                "relation": relation,
+                "symbol": symbol,
+            })
+        self.adjacency[src_key].add(tgt_key)
+        self.reverse_adjacency[tgt_key].add(src_key)
+
+    def compute_metrics(self) -> None:
+        """Calculate Fan-In (Ca), Fan-Out (Ce), and Instability (I = Ce / (Ca + Ce)) for all nodes."""
+        for key, node in self.nodes.items():
+            fan_out = len(self.adjacency.get(key, set()))
+            fan_in = len(self.reverse_adjacency.get(key, set()))
+            total = fan_in + fan_out
+            instability = round(fan_out / total, 2) if total > 0 else 0.0
+            node["fan_in"] = fan_in
+            node["fan_out"] = fan_out
+            node["instability"] = instability
+
+    def get_dependencies(self, file_path: Union[str, Path]) -> List[str]:
+        """Return direct outgoing dependencies (files imported/called by file_path)."""
+        key = self._resolve_key(file_path)
+        if not key:
+            return []
+        return sorted(self.nodes[t]["relative_path"] for t in self.adjacency.get(key, set()))
+
+    def get_dependents(self, file_path: Union[str, Path]) -> List[str]:
+        """Return direct incoming dependents (files that import/call file_path)."""
+        key = self._resolve_key(file_path)
+        if not key:
+            return []
+        return sorted(self.nodes[s]["relative_path"] for s in self.reverse_adjacency.get(key, set()))
+
+    def get_impacted_files(self, file_path: Union[str, Path]) -> List[str]:
+        """Compute transitive closure of all files impacted if file_path is modified."""
+        start_key = self._resolve_key(file_path)
+        if not start_key:
+            return []
+
+        visited: Set[str] = {start_key}
+        queue = deque([start_key])
+        impacted: List[str] = []
+
+        while queue:
+            curr = queue.popleft()
+            for caller_key in self.reverse_adjacency.get(curr, set()):
+                if caller_key not in visited:
+                    visited.add(caller_key)
+                    impacted.append(self.nodes[caller_key]["relative_path"])
+                    queue.append(caller_key)
+
+        return sorted(impacted)
+
+    def get_coupling_metrics(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+        """Return Fan-In, Fan-Out, and Instability metrics for a given file."""
+        key = self._resolve_key(file_path)
+        if not key:
+            return {"fan_in": 0, "fan_out": 0, "instability": 0.0}
+        node = self.nodes[key]
+        return {
+            "fan_in": node["fan_in"],
+            "fan_out": node["fan_out"],
+            "instability": node["instability"],
+        }
+
+    def get_hub_modules(self, min_fan_out: int = 5) -> List[Dict[str, Any]]:
+        """Return modules with excessive efferent coupling (fan_out >= min_fan_out)."""
+        return [
+            dict(node) for node in self.nodes.values()
+            if node["fan_out"] >= min_fan_out
+        ]
+
+    def get_orphaned_modules(self) -> List[Dict[str, Any]]:
+        """Return modules with zero incoming dependencies (fan_in == 0)."""
+        return [
+            dict(node) for node in self.nodes.values()
+            if node["fan_in"] == 0
+        ]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize entire dependency graph to a JSON-friendly dictionary."""
+        self.compute_metrics()
+        return {
+            "total_nodes": len(self.nodes),
+            "total_edges": len(self.edges),
+            "nodes": list(self.nodes.values()),
+            "edges": self.edges,
+        }
 
 
 class CrossFileContextResolver:
@@ -83,10 +251,15 @@ class CrossFileContextResolver:
         available_files: List[SourceFile],
     ) -> Optional[SourceFile]:
         """Find matching SourceFile in the project for a given imported identifier."""
-        norm_import = import_name.replace(".", "/").replace("\\", "/").strip().lower()
+        norm_raw = import_name.replace("\\", "/").strip().lower()
+        clean_stem = Path(norm_raw).stem.lower()
+        if norm_raw.endswith((".py", ".js", ".jsx", ".java", ".c", ".cpp", ".h", ".hpp")):
+            norm_no_ext = norm_raw.rsplit(".", 1)[0]
+        else:
+            norm_no_ext = norm_raw
+        norm_import = norm_no_ext.replace(".", "/")
         parts = [p for p in norm_import.split("/") if p]
         leaf_name = parts[-1] if parts else norm_import
-        clean_stem = Path(norm_import).stem.lower()
 
         current_path_str = Path(current_file).as_posix().lower()
 
@@ -97,13 +270,23 @@ class CrossFileContextResolver:
 
             cand_stem = Path(candidate.file_path).stem.lower()
             cand_rel = str(candidate.relative_path or "").replace("\\", "/").lower()
+            cand_rel_no_ext = cand_rel.rsplit(".", 1)[0]
+
+            # Space-normalized variants for cross-platform/underscore module naming
+            norm_import_space = norm_import.replace("_", " ")
+            cand_rel_space = cand_rel_no_ext.replace("_", " ")
+            leaf_space = leaf_name.replace("_", " ")
+            cand_stem_space = cand_stem.replace("_", " ")
 
             if (
-                leaf_name == cand_stem
+                norm_import == cand_rel_no_ext
+                or norm_import_space == cand_rel_space
+                or cand_rel == norm_raw
+                or cand_rel_no_ext.endswith(f"/{norm_import}")
+                or cand_rel_space.endswith(f"/{norm_import_space}")
+                or leaf_name == cand_stem
+                or leaf_space == cand_stem_space
                 or clean_stem == cand_stem
-                or norm_import in cand_rel
-                or cand_rel.endswith(f"/{leaf_name}.py")
-                or cand_rel.endswith(f"/{norm_import}.py")
             ):
                 return candidate
 
@@ -495,3 +678,46 @@ class CrossFileContextResolver:
                 )
 
         return finding
+
+    def build_dependency_graph(
+        self,
+        all_project_files: List[SourceFile],
+    ) -> DependencyGraph:
+        """
+        Builds a complete repository-level dependency graph across all project files,
+        linking import relationships and calculating coupling metrics.
+        """
+        graph = DependencyGraph()
+        if not all_project_files:
+            return graph
+
+        # Register all nodes first
+        for sf in all_project_files:
+            rel = str(sf.relative_path or Path(sf.file_path).name).replace("\\", "/")
+            graph.add_node(sf.file_path, relative_path=rel, language=sf.language)
+
+        # Build edges from imports
+        for sf in all_project_files:
+            content = sf.content or ""
+            if not content and self.filesystem and self.filesystem.exists(sf.file_path):
+                try:
+                    content = self.filesystem.read_text(sf.file_path)
+                except Exception:
+                    content = ""
+
+            if not content:
+                continue
+
+            imports = self.extract_imports(content, sf.language)
+            for imp in imports:
+                matched = self.resolve_import_to_file(imp, sf.file_path, all_project_files)
+                if matched:
+                    graph.add_edge(
+                        source_path=sf.file_path,
+                        target_path=matched.file_path,
+                        relation="imports",
+                        symbol=imp,
+                    )
+
+        graph.compute_metrics()
+        return graph
