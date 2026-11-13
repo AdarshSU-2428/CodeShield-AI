@@ -1,12 +1,13 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.core.enums import PatchStatus
 from app.core.interfaces.filesystem import FileSystem
 from app.core.interfaces.llm import LLMClient
 from app.core.models.audit import AuditFinding
-from app.core.models.patch import Patch
+from app.core.models.patch import ApprovalRequiredError, Patch
 from app.infrastructure.filesystem import LocalFileSystem
 from app.infrastructure.llm import GroqLLMClient
 from app.patches import (
@@ -18,7 +19,10 @@ from app.patches import (
 
 
 class PatchService:
-    """Coordinates code patch proposal, diff review, AI remediation, safe disk application, and rollback."""
+    """
+    Coordinates code patch proposal, Git-style diff review,
+    polyglot syntax diagnostics, AI remediation, safe disk application, approval gates, and rollback.
+    """
 
     def __init__(
         self,
@@ -71,6 +75,7 @@ class PatchService:
             original_code=original_code,
             modified_code=modified_code,
             file_name=target_path.name,
+            include_git_header=True,
         )
 
         patch = Patch(
@@ -162,32 +167,127 @@ class PatchService:
         
         return patches
 
+    def get_git_diff(self, patch_id: str) -> str:
+        """
+        Retrieve the standard Git-style diff representation for a proposed patch
+        to allow code reviewers to inspect line additions, deletions, and context.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return patch.git_diff
+
+    def get_diff_stats(self, patch_id: str) -> Dict[str, Any]:
+        """
+        Retrieve diff statistics for code review (additions, deletions, total, diff_stat).
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return {
+            "patch_id": patch.patch_id,
+            "file_path": patch.file_path.as_posix(),
+            "additions_count": patch.diff.additions_count if patch.diff else 0,
+            "deletions_count": patch.diff.deletions_count if patch.diff else 0,
+            "total_changes": patch.diff.total_changes if patch.diff else 0,
+            "diff_stat": patch.diff_stat,
+            "file_stat": patch.diff.file_stat if patch.diff else None,
+        }
+
+    def get_patch_hunks(self, patch_id: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve structured hunks with line-by-line coordinate mapping for review.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return patch.diff.hunks if patch.diff else []
+
+    def validate_patch_syntax(self, patch_id: str) -> Dict[str, Any]:
+        """
+        Retrieve detailed polyglot syntax diagnostics (line, column, token, valid)
+        for a patch proposal before applying it to disk.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return self.applier.validator.get_syntax_diagnostics(
+            content=patch.modified_code,
+            file_path=patch.file_path,
+        )
+
     def validate_patch(self, patch_id: str) -> Tuple[bool, Optional[str]]:
         """
-        User Story 20: Validate candidate patch syntax in-memory without mutating disk.
+        Validate candidate patch syntax in-memory without mutating disk.
         """
         patch = self.get_patch(patch_id)
         if not patch:
             raise ValueError(f"Patch with ID '{patch_id}' not found.")
         return self.applier.validator.validate_patch_candidate(patch)
 
-    def validate_and_apply(self, patch_id: str) -> bool:
+    def approve_patch(
+        self,
+        patch_id: str,
+        approved_by: Optional[str] = "reviewer",
+    ) -> Patch:
         """
-        User Story 20: Explicitly validate candidate patch syntax and apply atomically to disk.
+        Explicitly approve a proposed patch, unblocking it for disk application.
         """
         patch = self.get_patch(patch_id)
         if not patch:
             raise ValueError(f"Patch with ID '{patch_id}' not found.")
-        return self.applier.validate_and_apply(patch)
 
-    def apply_patch(self, patch_id: str) -> bool:
+        patch.approve(approved_by=approved_by)
+        return patch
+
+    def reject_patch(
+        self,
+        patch_id: str,
+        reason: Optional[str] = None,
+    ) -> Patch:
+        """
+        US 30: Explicitly reject a proposed patch.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+
+        patch.reject(reason=reason)
+        return patch
+
+    def validate_and_apply(
+        self,
+        patch_id: str,
+        require_approval: bool = False,
+    ) -> bool:
+        """
+        Explicitly validate candidate patch syntax and apply atomically to disk.
+        """
+        patch = self.get_patch(patch_id)
+        if not patch:
+            raise ValueError(f"Patch with ID '{patch_id}' not found.")
+        return self.applier.apply_patch(
+            patch,
+            validate_pre_syntax=True,
+            require_approval=require_approval,
+        )
+
+    def apply_patch(
+        self,
+        patch_id: str,
+        require_approval: bool = False,
+    ) -> bool:
         """Safely apply a proposed patch to disk with verified backup."""
         patch = self.get_patch(patch_id)
         
         if not patch:
             raise ValueError(f"Patch with ID '{patch_id}' not found.")
         
-        return self.applier.apply_patch(patch)
+        return self.applier.apply_patch(
+            patch,
+            validate_pre_syntax=True,
+            require_approval=require_approval,
+        )
 
     def rollback_patch(self, patch_id: str) -> bool:
         """Restore target file from backup, reverting applied patch."""
