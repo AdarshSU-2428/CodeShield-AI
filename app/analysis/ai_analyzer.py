@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
+from app.ai.finding_validator import FindingValidator
 from app.core.interfaces.llm import LLMClient
 from app.core.models.audit import (
     AuditFinding,
@@ -11,6 +12,8 @@ from app.core.models.audit import (
 from app.core.models.code import CodeComponent, SourceFile
 from app.infrastructure.llm import GroqLLMClient
 from app.infrastructure.logger import logger
+from app.rag.context_builder import ContextBuilder
+from app.rag.retriever import LocalContextRetriever
 
 if TYPE_CHECKING:
     from app.analysis.cross_file import CrossFileContextResolver
@@ -23,11 +26,21 @@ class AIVulnerabilityAnalyzer:
         self,
         llm_client: Optional[LLMClient] = None,
         cross_file_resolver: Optional["CrossFileContextResolver"] = None,
+        retriever: Optional[LocalContextRetriever] = None,
+        context_builder: Optional[ContextBuilder] = None,
+        finding_validator: Optional[FindingValidator] = None,
         max_file_size_chars: int = 50000,
         temperature: float = 0.1,
     ):
         self.llm_client: LLMClient = llm_client if llm_client is not None else GroqLLMClient()
         self.cross_file_resolver: Optional["CrossFileContextResolver"] = cross_file_resolver
+        self.retriever: Optional[LocalContextRetriever] = retriever
+        self.context_builder: ContextBuilder = (
+            context_builder if context_builder is not None else ContextBuilder()
+        )
+        self.finding_validator: FindingValidator = (
+            finding_validator if finding_validator is not None else FindingValidator()
+        )
         self.max_file_size_chars: int = max_file_size_chars
         self.temperature: float = temperature
         self.last_error: Optional[str] = None
@@ -266,18 +279,30 @@ class AIVulnerabilityAnalyzer:
         if not self.llm_client.is_available():
             return []
 
-        # Automatically resolve cross-file dependencies if resolver & project files are provided
+        # Automatically resolve cross-file dependencies via LocalContextRetriever or fallback resolver
         effective_context = context_snippets
-        if effective_context is None and self.cross_file_resolver and all_project_files:
-            try:
-                effective_context = self.cross_file_resolver.bundle_cross_file_context(
-                    source_file=source_file,
-                    all_project_files=all_project_files,
-                    project_id=project_id,
-                )
-            except Exception as ctx_err:
-                logger.warning(f"Cross-file context bundling failed cleanly: {ctx_err}")
-                effective_context = None
+        if effective_context is None and all_project_files:
+            if self.retriever is not None:
+                try:
+                    effective_context = self.retriever.retrieve_hybrid_context(
+                        source_file=source_file,
+                        all_project_files=all_project_files,
+                        project_id=project_id,
+                    )
+                except Exception as ret_err:
+                    logger.warning(f"LocalContextRetriever failed cleanly: {ret_err}")
+                    effective_context = None
+
+            if effective_context is None and self.cross_file_resolver is not None:
+                try:
+                    effective_context = self.cross_file_resolver.bundle_cross_file_context(
+                        source_file=source_file,
+                        all_project_files=all_project_files,
+                        project_id=project_id,
+                    )
+                except Exception as ctx_err:
+                    logger.warning(f"Cross-file context bundling failed cleanly: {ctx_err}")
+                    effective_context = None
 
         messages = self.build_messages(source_file, context_snippets=effective_context)
 
