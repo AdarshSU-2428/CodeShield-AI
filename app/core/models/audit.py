@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import uuid
 
 from app.core.enums import Confidence, FindingCategory, JobStatus, Severity
 
-
+# CVSS-aligned risk prioritization weights
 SEVERITY_WEIGHTS: Dict[str, float] = {
     Severity.CRITICAL.value: 10.0,
     Severity.HIGH.value: 8.0,
@@ -22,7 +23,10 @@ CONFIDENCE_MULTIPLIERS: Dict[str, float] = {
 
 
 class AuditFinding:
-    """Normalized security vulnerability or code quality finding."""
+    """
+    Normalized security vulnerability, architectural smell, or code quality finding.
+    US 19: Guarantees a canonical, structured schema with SARIF export capabilities.
+    """
 
     def __init__(
         self,
@@ -90,11 +94,10 @@ class AuditFinding:
         self.cwe_id = cwe_id
         self.recommendation = recommendation
         self.source = source
-        self.metadata = metadata if metadata else {}
-        if rule_id:
-            self.metadata['rule_id'] = rule_id
+        self.metadata = metadata if metadata is not None else {}
+        self.rule_id = rule_id
 
-        # Calculate or assign deterministic risk score (0.0 to 10.0 scale)
+        # User Story 10: Dynamic CVSS-aligned Risk Prioritization Score
         if risk_score is not None:
             self._risk_score = round(max(0.0, min(10.0, float(risk_score))), 2)
         else:
@@ -171,34 +174,77 @@ class AuditFinding:
         self.related_components.append(comp)
 
     def extract_context_snippet(self, file_content: str, context_lines: int = 2) -> str:
-        """
-        Extract code snippet surrounding [start_line, end_line] with line numbers and a pointer marker '>'.
-        """
+        """Extract code snippet surrounding [start_line, end_line] with line numbers and pointer '>'."""
         if not file_content:
             return ""
         lines = file_content.splitlines()
         total_lines = len(lines)
-        if total_lines == 0:
-            return ""
 
-        # Clamp lines
-        start_idx = max(1, self.start_line)
-        end_idx = min(total_lines, max(start_idx, self.end_line))
+        s = max(1, self.start_line - context_lines)
+        e = min(total_lines, self.end_line + context_lines)
 
-        window_start = max(1, start_idx - context_lines)
-        window_end = min(total_lines, end_idx + context_lines)
+        snippet_lines = []
+        for i in range(s, e + 1):
+            prefix = "> " if self.start_line <= i <= self.end_line else "  "
+            line_txt = lines[i - 1] if i - 1 < len(lines) else ""
+            snippet_lines.append(f"{prefix}{i:4d} | {line_txt}")
 
-        formatted_lines = []
-        for line_no in range(window_start, window_end + 1):
-            line_text = lines[line_no - 1]
-            marker = ">" if (start_idx <= line_no <= end_idx) else " "
-            formatted_lines.append(f"{marker} {line_no:4d} | {line_text}")
-
-        self.context_snippet = "\n".join(formatted_lines)
+        self.context_snippet = "\n".join(snippet_lines)
         if not self.code_snippet:
-            self.code_snippet = "\n".join(lines[start_idx - 1:end_idx])
+            target_slice = lines[self.start_line - 1 : self.end_line]
+            self.code_snippet = "\n".join(target_slice)
 
         return self.context_snippet
+
+    def to_sarif_result(self) -> Dict[str, Any]:
+        """
+        US 19: Convert finding into a standard SARIF v2.1.0 result entry.
+        """
+        sev_str = self.severity.value if hasattr(self.severity, "value") else str(self.severity).lower()
+        level_map = {
+            "critical": "error",
+            "high": "error",
+            "medium": "warning",
+            "low": "note",
+            "info": "note",
+        }
+        sarif_level = level_map.get(sev_str, "warning")
+        rule_id = self.cwe_id or self.rule_id or f"CS-{abs(hash(self.title)) % 10000:04d}"
+        uri = str(self.relative_file_path or Path(self.file_path).name).replace("\\", "/")
+
+        result: Dict[str, Any] = {
+            "ruleId": rule_id,
+            "level": sarif_level,
+            "message": {"text": f"{self.title}: {self.description}"},
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {
+                            "startLine": self.start_line,
+                            "endLine": self.end_line,
+                        },
+                    }
+                }
+            ],
+            "properties": {
+                "category": self.category.value if hasattr(self.category, "value") else str(self.category),
+                "severity": sev_str,
+                "confidence": self.confidence.value if hasattr(self.confidence, "value") else str(self.confidence),
+                "risk_score": self.risk_score,
+                "recommendation": self.recommendation,
+                "remediation_steps": self.remediation_steps,
+            },
+        }
+
+        if self.start_column is not None:
+            result["locations"][0]["physicalLocation"]["region"]["startColumn"] = self.start_column
+        if self.end_column is not None:
+            result["locations"][0]["physicalLocation"]["region"]["endColumn"] = self.end_column
+        if self.code_snippet:
+            result["locations"][0]["physicalLocation"]["region"]["snippet"] = {"text": self.code_snippet}
+
+        return result
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert finding to JSON-serializable dictionary."""
@@ -260,7 +306,7 @@ class AuditProgress:
         """Convert telemetry to JSON-serializable dictionary."""
         return {
             "current_step": self.current_step,
-            "percentage": round(self.percentage, 1),
+            "percentage": self.percentage,
             "current_file": self.current_file,
             "scanned_files_count": self.scanned_files_count,
             "total_files_count": self.total_files_count,
@@ -268,23 +314,22 @@ class AuditProgress:
         }
 
     def __repr__(self) -> str:
-        return f"<AuditProgress step='{self.current_step}' {self.percentage:.1f}%>"
+        return f"<AuditProgress step='{self.current_step}' {self.percentage:.1f}% file='{self.current_file}'>"
 
 
 class AuditJob:
-    """Represents an ongoing or completed audit job."""
+    """Tracks asynchronous audit executions and life-cycle progression."""
 
     def __init__(
         self,
+        project_id: str,
         job_id: Optional[str] = None,
-        project_id: str = "",
         status: JobStatus = JobStatus.QUEUED,
         created_at: Optional[datetime] = None,
         started_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
         error_message: Optional[str] = None,
         progress: Optional[AuditProgress] = None,
-        findings: Optional[List[AuditFinding]] = None,
     ):
         self.job_id = job_id if job_id else str(uuid.uuid4())
         self.project_id = str(project_id)
@@ -294,7 +339,7 @@ class AuditJob:
         self.completed_at = completed_at
         self.error_message = error_message
         self.progress = progress if progress else AuditProgress()
-        self.findings = findings if findings else []
+        self.findings: List[AuditFinding] = []
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert job representation to JSON-friendly dictionary."""
@@ -315,7 +360,10 @@ class AuditJob:
 
 
 class AuditReport:
-    """Consolidated audit outcome encompassing prioritized findings and metrics."""
+    """
+    Consolidated audit outcome encompassing prioritized findings and metrics.
+    US 19: Provides multi-format structured exports: JSON, SARIF v2.1.0, and Markdown.
+    """
 
     def __init__(
         self,
@@ -404,6 +452,137 @@ class AuditReport:
             filtered = [f for f in filtered if f.risk_score >= min_risk_score]
 
         return sorted(filtered, key=lambda f: f.risk_score, reverse=True)
+
+    def to_sarif(self) -> Dict[str, Any]:
+        """
+        Convert audit results to standard SARIF v2.1.0 format
+        for ingestion into GitHub Code Scanning, IDE extensions, and CI/CD tools.
+        """
+        rules_map: Dict[str, Dict[str, Any]] = {}
+        results: List[Dict[str, Any]] = []
+
+        for finding in self.get_prioritized_findings():
+            sarif_res = finding.to_sarif_result()
+            rule_id = sarif_res["ruleId"]
+            if rule_id not in rules_map:
+                rules_map[rule_id] = {
+                    "id": rule_id,
+                    "name": finding.title,
+                    "shortDescription": {"text": finding.title},
+                    "fullDescription": {"text": finding.description},
+                    "defaultConfiguration": {"level": sarif_res["level"]},
+                    "properties": {
+                        "category": finding.category.value if hasattr(finding.category, "value") else str(finding.category),
+                        "tags": ["security", "quality", finding.category.value if hasattr(finding.category, "value") else "code"],
+                    },
+                }
+            results.append(sarif_res)
+
+        return {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "CodeShield AI",
+                            "version": "1.0.0",
+                            "informationUri": "https://github.com/codeshield-ai",
+                            "rules": list(rules_map.values()),
+                        }
+                    },
+                    "results": results,
+                }
+            ],
+        }
+
+    def to_markdown(self) -> str:
+        """
+        US 19: Render publication-ready, human-readable Markdown audit report.
+        """
+        gen_str = self.generated_at.strftime("%Y-%m-%d %H:%M:%S UTC") if self.generated_at else "N/A"
+        lines: List[str] = [
+            "# CodeShield AI Security & Quality Audit Report",
+            "",
+            f"- **Job ID**: `{self.job_id}`",
+            f"- **Project ID**: `{self.project_id}`",
+            f"- **Generated At**: {gen_str}",
+            f"- **Total Findings**: {self.total_findings}",
+            f"- **Average Risk Score**: {self.average_risk_score} / 10.0 (Max: {self.max_risk_score})",
+            "",
+            "## Severity Summary",
+            "",
+            "| Severity | Finding Count |",
+            "| :--- | :--- |",
+        ]
+        for sev, count in self.findings_by_severity.items():
+            lines.append(f"| **{sev.upper()}** | {count} |")
+
+        lines.extend([
+            "",
+            "## Category Breakdown",
+            "",
+            "| Category | Finding Count |",
+            "| :--- | :--- |",
+        ])
+        for cat, count in self.findings_by_category.items():
+            lines.append(f"| {cat.capitalize()} | {count} |")
+
+        if self.warnings:
+            lines.extend([
+                "",
+                "## System Warnings & Telemetry",
+                "",
+            ])
+            for w in self.warnings:
+                lines.append(f"- {w}")
+
+        lines.extend([
+            "",
+            "## Prioritized Findings",
+            "",
+        ])
+
+        if not self.findings:
+            lines.append("No findings detected. Codebase passed all security and quality checks.")
+        else:
+            for idx, f in enumerate(self.get_prioritized_findings(), start=1):
+                sev_badge = f.severity.value.upper() if hasattr(f.severity, "value") else str(f.severity).upper()
+                lines.extend([
+                    f"### {idx}. [{sev_badge}] {f.title} (Risk: {f.risk_score}/10)",
+                    f"- **File**: `{f.relative_file_path or f.file_path}:{f.start_line}-{f.end_line}`",
+                    f"- **Category**: {f.category.value if hasattr(f.category, 'value') else f.category}",
+                    f"- **Confidence**: {f.confidence.value if hasattr(f.confidence, 'value') else f.confidence}",
+                    f"- **Description**: {f.description}",
+                ])
+                if f.cwe_id:
+                    lines.append(f"- **CWE**: {f.cwe_id}")
+                if f.risk_explanation:
+                    lines.append(f"- **Risk Explanation**: {f.risk_explanation}")
+                if f.exploit_scenario:
+                    lines.append(f"- **Exploit Scenario**: {f.exploit_scenario}")
+                if f.code_snippet:
+                    lines.extend([
+                        "",
+                        "```",
+                        f"{f.code_snippet}",
+                        "```",
+                    ])
+                if f.remediation_code:
+                    lines.extend([
+                        "",
+                        "**Suggested Remediation Code**:",
+                        "```",
+                        f"{f.remediation_code}",
+                        "```",
+                    ])
+                if f.remediation_steps:
+                    lines.append("**Remediation Steps**:")
+                    for s in f.remediation_steps:
+                        lines.append(f"  - {s}")
+                lines.append("")
+
+        return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert audit report to dictionary."""

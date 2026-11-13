@@ -1,9 +1,10 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.analysis.component_extractor import ComponentExtractor
 from app.analysis.parser import ParserRegistry
 from app.analysis.scanner import RepositoryScanner
+from app.core.enums import FileStatus
 from app.core.interfaces.filesystem import FileSystem
 from app.core.interfaces.vector_store import VectorStore
 from app.core.models.code import CodeChunk, CodeComponent, SourceFile
@@ -66,6 +67,65 @@ class RepositoryIndexer:
             "files_scanned": len(scanned_files),
             "files_indexed": indexed_files,
             "chunks_indexed": total_chunks,
+            "errors": errors,
+        }
+
+    def index_incremental(
+        self,
+        project: Project,
+        baseline_manifest: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        US 28: Incremental repository indexing.
+        Skips UNCHANGED files entirely to save compute and embedding generation.
+        Indexes NEW files and re-indexes MODIFIED files (purging stale chunks).
+        Deletes vector chunks for DELETED files.
+        Returns detailed delta metrics and the updated snapshot manifest.
+        """
+        project_id = getattr(project, "project_id", getattr(project, "id", str(project.root_path)))
+        classified_files, updated_manifest = self.scanner.detect_changes(
+            project=project,
+            baseline_manifest=baseline_manifest,
+        )
+
+        unchanged_count = 0
+        new_count = 0
+        modified_count = 0
+        deleted_count = 0
+        total_chunks_indexed = 0
+        errors: List[str] = []
+
+        for sf in classified_files:
+            try:
+                if sf.status == FileStatus.UNCHANGED:
+                    unchanged_count += 1
+                    continue
+
+                elif sf.status == FileStatus.DELETED:
+                    # Purge chunks from vector store using relative or string file path
+                    del_path_str = str(sf.file_path)
+                    self.remove_file(file_path=del_path_str, project_id=project_id)
+                    deleted_count += 1
+
+                elif sf.status in (FileStatus.NEW, FileStatus.MODIFIED):
+                    chunks = self.index_file(source_file=sf, project_id=project_id)
+                    total_chunks_indexed += len(chunks)
+                    if sf.status == FileStatus.NEW:
+                        new_count += 1
+                    else:
+                        modified_count += 1
+
+            except Exception as exc:
+                errors.append(f"Error incrementally indexing {sf.file_path}: {exc}")
+
+        return {
+            "project_id": project_id,
+            "unchanged_files": unchanged_count,
+            "new_files": new_count,
+            "modified_files": modified_count,
+            "deleted_files": deleted_count,
+            "chunks_indexed": total_chunks_indexed,
+            "manifest": updated_manifest,
             "errors": errors,
         }
 

@@ -5,7 +5,7 @@ from typing import Optional
 
 from app.core.enums import PatchStatus
 from app.core.interfaces.filesystem import FileSystem
-from app.core.models.patch import Patch
+from app.core.models.patch import ApprovalRequiredError, Patch
 from app.infrastructure.filesystem import LocalFileSystem
 from app.patches.backup_manager import BackupManager
 from app.patches.rollback_manager import RollbackManager
@@ -36,12 +36,24 @@ class PatchApplier:
         )
         self._lock = threading.Lock()
 
-    def apply_patch(self, patch: Patch, validate_pre_syntax: bool = True) -> bool:
+    def apply_patch(
+        self,
+        patch: Patch,
+        validate_pre_syntax: bool = True,
+        require_approval: bool = False,
+    ) -> bool:
         """
-        Apply patch to target file with mandatory pre-application syntax validation,
-        cryptographic backup, and post-patch integrity check.
+        Apply patch to target file with optional approval gate, mandatory pre-application
+        syntax validation, cryptographic backup, and post-patch integrity check.
         """
         with self._lock:
+            # User Story 30: Approval Workflow Gate
+            if require_approval and patch.status != PatchStatus.APPROVED:
+                raise ApprovalRequiredError(
+                    f"Cannot apply patch '{patch.patch_id}' without explicit approval. "
+                    f"Current status: '{patch.status.value}'."
+                )
+
             target_path = Path(patch.file_path).resolve()
 
             if not self.filesystem.exists(target_path):

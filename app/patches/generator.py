@@ -8,7 +8,10 @@ from app.core.models.patch import PatchDiff
 
 
 class DiffGenerator:
-    """Generates standard unified Git diffs and structured line-by-line diff models."""
+    """
+    US 18: Generates standard unified Git diffs, Git-style diff headers,
+    diff statistics (+N, -M), and structured line-by-line diff models for code review.
+    """
 
     def __init__(self, context_lines: int = 3):
         self.context_lines: int = max(0, context_lines)
@@ -47,7 +50,7 @@ class DiffGenerator:
 
         for raw_line in diff_lines:
             # Skip file header lines (--- a/... and +++ b/...)
-            if raw_line.startswith(("---", "+++")):
+            if raw_line.startswith(("---", "+++", "diff --git", "index ")):
                 continue
 
             if raw_line.startswith("@@"):
@@ -70,7 +73,7 @@ class DiffGenerator:
             if current_hunk is None:
                 continue
 
-            content = raw_line[1:] if len(raw_line) > 1 else ""
+            content = raw_line[1:].rstrip("\r\n") if len(raw_line) > 1 else ""
 
             if raw_line.startswith("+"):
                 additions += 1
@@ -104,41 +107,78 @@ class DiffGenerator:
 
         return additions, deletions, hunks
 
+    def generate_git_diff_header(
+        self,
+        file_path: Union[str, Path],
+        old_sha: str = "0000000",
+        new_sha: str = "1111111",
+    ) -> str:
+        """Construct standard Git diff header compatible with git apply and patch tools."""
+        norm_path = Path(file_path).as_posix()
+        return (
+            f"diff --git a/{norm_path} b/{norm_path}\n"
+            f"--- a/{norm_path}\n"
+            f"+++ b/{norm_path}\n"
+        )
+
     def generate_diff(
         self,
         original_code: str,
         modified_code: str,
         file_name: str = "file",
+        include_git_header: bool = True,
     ) -> PatchDiff:
-        """Compute unified diff between original and proposed code."""
+        """
+        Compute unified Git diff between original and proposed code.
+        Returns a rich PatchDiff containing raw_diff, git_diff, additions, deletions, and hunks.
+        """
         orig_lines = original_code.splitlines(keepends=True)
         mod_lines = modified_code.splitlines(keepends=True)
+        norm_file = Path(file_name).as_posix()
 
         diff_iterator = difflib.unified_diff(
             orig_lines,
             mod_lines,
-            fromfile=f"a/{file_name}",
-            tofile=f"b/{file_name}",
+            fromfile=f"a/{norm_file}",
+            tofile=f"b/{norm_file}",
             n=self.context_lines,
         )
 
         raw_diff_lines = list(diff_iterator)
-        raw_diff = "".join(raw_diff_lines)
-
         additions, deletions, hunks = self._parse_hunks(raw_diff_lines)
 
+        # Build clean raw unified diff
+        raw_diff = "".join(raw_diff_lines)
+
+        # Build full standard Git diff with diff --git header
+        if raw_diff:
+            if not raw_diff.startswith("diff --git"):
+                git_diff = f"diff --git a/{norm_file} b/{norm_file}\n" + raw_diff
+            else:
+                git_diff = raw_diff
+        else:
+            git_diff = ""
+
+        # Compute diff stat summary (e.g., '1 file changed, 3 insertions(+), 1 deletion(-)')
+        ins_label = "insertion(+)" if additions == 1 else "insertions(+)"
+        del_label = "deletion(-)" if deletions == 1 else "deletions(-)"
+        diff_stat = f"{norm_file} | {additions + deletions} +{'*'*min(additions, 20)}-{'*'*min(deletions, 20)}"
+        summary_stat = f"1 file changed, {additions} {ins_label}, {deletions} {del_label}"
+
         return PatchDiff(
-            raw_diff=raw_diff,
+            raw_diff=git_diff if include_git_header else raw_diff,
             additions_count=additions,
             deletions_count=deletions,
             hunks=hunks,
+            diff_stat=summary_stat,
+            file_stat=diff_stat,
         )
 
 
 class PatchGenerator(DiffGenerator):
     """
-    US 14: Generates concrete remediated source code and unified diffs directly
-    from an AuditFinding's line span and suggested remediation code.
+    US 14 & US 18: Generates concrete remediated source code and standard Git diffs
+    directly from an AuditFinding's line span and suggested remediation code.
     """
 
     def apply_inline_remediation(
@@ -187,7 +227,7 @@ class PatchGenerator(DiffGenerator):
         file_name: str = "file",
     ) -> Tuple[str, PatchDiff]:
         """
-        Produce remediated source code and unified PatchDiff for an AuditFinding.
+        Produce remediated source code and Git-style PatchDiff for an AuditFinding.
         Returns: (modified_code, patch_diff)
         """
         code_to_apply = custom_remediation_code or finding.remediation_code
@@ -205,6 +245,7 @@ class PatchGenerator(DiffGenerator):
             original_code=original_code,
             modified_code=modified_code,
             file_name=file_name,
+            include_git_header=True,
         )
 
         return modified_code, diff

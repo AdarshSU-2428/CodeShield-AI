@@ -1,6 +1,6 @@
 import fnmatch
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from app.analysis.language_detector import LanguageDetector, default_language_detector
 from app.core.enums import FileStatus, Language
 from app.core.interfaces.filesystem import FileSystem
@@ -109,6 +109,92 @@ class RepositoryScanner:
         project.total_files = total_count
         project.supported_files = supported_count
         return discovered_files
+
+    def detect_changes(
+        self,
+        project: Project,
+        baseline_manifest: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Tuple[List[SourceFile], Dict[str, Dict[str, Any]]]:
+        """
+        Incremental change detection against a baseline snapshot manifest.
+        Compares content hashes, file sizes, and paths to categorize files into:
+        - NEW: Discovered file not present in baseline manifest.
+        - MODIFIED: Existing file whose content hash or size has changed.
+        - UNCHANGED: Existing file whose content hash exactly matches baseline.
+        - DELETED: File present in baseline manifest but missing from current filesystem.
+
+        Returns:
+            Tuple[List[SourceFile], Dict[str, Dict[str, Any]]]:
+                (classified_files_list, updated_snapshot_manifest)
+        """
+        discovered = self.scan_project(project)
+        baseline = baseline_manifest or {}
+
+        # Normalize baseline keys to forward-slash relative paths
+        norm_baseline: Dict[str, Dict[str, Any]] = {}
+        for raw_k, v in baseline.items():
+            norm_k = Path(raw_k).as_posix().lower()
+            norm_baseline[norm_k] = v
+
+        current_relative_keys: Set[str] = set()
+        updated_manifest: Dict[str, Dict[str, Any]] = {}
+        classified_files: List[SourceFile] = []
+
+        for sf in discovered:
+            rel_str = str(sf.relative_path or Path(sf.file_path).name).replace("\\", "/")
+            rel_key = rel_str.lower()
+            current_relative_keys.add(rel_key)
+
+            if sf.status == FileStatus.UNSUPPORTED:
+                classified_files.append(sf)
+                continue
+
+            current_hash = sf.content_hash
+            base_entry = norm_baseline.get(rel_key)
+
+            if base_entry is None:
+                sf.status = FileStatus.NEW
+            else:
+                base_hash = base_entry.get("content_hash") or base_entry.get("hash")
+                if current_hash and base_hash and current_hash == base_hash:
+                    sf.status = FileStatus.UNCHANGED
+                else:
+                    sf.status = FileStatus.MODIFIED
+
+            # Populate snapshot manifest
+            updated_manifest[rel_str] = {
+                "file_path": str(sf.file_path),
+                "relative_path": rel_str,
+                "content_hash": current_hash,
+                "size_bytes": sf.size_bytes,
+                "language": sf.language.value if hasattr(sf.language, "value") else str(sf.language),
+                "status": sf.status.value,
+            }
+            classified_files.append(sf)
+
+        # Detect DELETED files from baseline that no longer exist on disk
+        for base_key, base_entry in norm_baseline.items():
+            if base_key not in current_relative_keys:
+                del_rel = base_entry.get("relative_path") or base_key
+                del_path = base_entry.get("file_path") or (project.root_path / del_rel)
+                raw_lang = base_entry.get("language", "unknown")
+                lang = Language.UNKNOWN
+                for l in Language:
+                    if l.value == raw_lang:
+                        lang = l
+                        break
+
+                deleted_sf = SourceFile(
+                    file_path=Path(del_path),
+                    relative_path=Path(del_rel),
+                    language=lang,
+                    status=FileStatus.DELETED,
+                    size_bytes=0,
+                    content_hash=base_entry.get("content_hash"),
+                )
+                classified_files.append(deleted_sf)
+
+        return classified_files, updated_manifest
         
     def _walk(self, root: Path):
         """Helper to walk directory tree yielding (Path, List[str], List[str])."""
