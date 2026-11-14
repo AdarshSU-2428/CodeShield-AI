@@ -43,6 +43,8 @@ scanner:
     - "target"
     - ".idea"
     - ".vscode"
+    - "data"
+    - "backups"
 
   ignore_patterns:
     - "*.min.js"
@@ -53,6 +55,8 @@ scanner:
     - "*.o"
     - "*.obj"
     - "*.so"
+    - "*.bak"
+    - "*.backup"
     - "*.dll"
     - "*.exe"
     - "package-lock.json"

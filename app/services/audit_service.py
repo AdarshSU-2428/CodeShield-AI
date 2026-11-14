@@ -109,11 +109,22 @@ class AuditService:
             except Exception:
                 pass
 
+    @staticmethod
+    def _is_test_file(path_str: str) -> bool:
+        """Heuristic check to determine if a file is test fixture or test suite."""
+        norm = path_str.replace("\\", "/").lower()
+        parts = norm.split("/")
+        test_markers = {"tests", "test", "__tests__", "fixtures", "spec"}
+        return any(p in test_markers for p in parts) or norm.endswith(("_test.py", "test_.py", ".test.js", ".spec.js"))
+
     def run_audit(
         self,
         job_id: str,
         project: Project,
         on_progress: Optional[Callable[[AuditProgress], None]] = None,
+        enable_ai: bool = True,
+        enable_smells: bool = True,
+        include_tests: bool = True,
     ) -> AuditReport:
         """
         Execute full multi-phase audit pipeline:
@@ -152,6 +163,14 @@ class AuditService:
             except Exception:
                 source_files = self._scanner.scan_project(project.root_path)
             
+            if not include_tests:
+                prod_files = [
+                    sf for sf in source_files
+                    if not self._is_test_file(str(sf.relative_path or sf.file_path))
+                ]
+                if prod_files:
+                    source_files = prod_files
+
             total_files = len(source_files)
             job.progress.total_files_count = total_files
 
@@ -246,15 +265,16 @@ class AuditService:
                 all_findings.extend(rule_findings)
 
                 # 3. Code Quality & Architectural Anti-Pattern Analysis
-                quality_findings = (
-                    self._quality_analyzer.analyze_file(sf, ast_tree=tree)
-                    if hasattr(self._quality_analyzer, "analyze_file")
-                    else self._quality_analyzer.evaluate_file(sf)
-                )
-                all_findings.extend(quality_findings)
+                if enable_smells:
+                    quality_findings = (
+                        self._quality_analyzer.analyze_file(sf, ast_tree=tree)
+                        if hasattr(self._quality_analyzer, "analyze_file")
+                        else self._quality_analyzer.evaluate_file(sf)
+                    )
+                    all_findings.extend(quality_findings)
 
                 # 4. Optional AI Semantic Vulnerability Analysis (with graceful degradation)
-                if self._ai_analyzer and hasattr(self._ai_analyzer, "analyze_file"):
+                if enable_ai and self._ai_analyzer and hasattr(self._ai_analyzer, "analyze_file"):
                     try:
                         ai_findings = self._ai_analyzer.analyze_file(sf)
                         all_findings.extend(ai_findings)
@@ -280,13 +300,13 @@ class AuditService:
                 return report
 
             # Global Architectural Analysis: Circular Dependencies
-            arch_findings = (
-                self._architecture_detector.analyze_project(source_files)
-                if hasattr(self._architecture_detector, "analyze_project")
-                else self._architecture_detector.evaluate_architecture(source_files)
-            )
-
-            all_findings.extend(arch_findings)
+            if enable_smells:
+                arch_findings = (
+                    self._architecture_detector.analyze_project(source_files)
+                    if hasattr(self._architecture_detector, "analyze_project")
+                    else self._architecture_detector.evaluate_architecture(source_files)
+                )
+                all_findings.extend(arch_findings)
 
             # -------------------------------------------------------------
             # Phase 3: Exact Attribution & Prioritization (75% - 100%)

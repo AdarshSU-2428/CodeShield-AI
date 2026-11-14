@@ -51,7 +51,7 @@ class LocalEmbeddingService(EmbeddingService):
         if not text or not text.strip():
             return [0.0] * self.dimension
 
-        cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()
+        cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if cache_key in self._cache:
             return self._cache[cache_key]
 

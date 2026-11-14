@@ -52,6 +52,9 @@ class HardcodedSecretRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
+            trimmed = line.strip()
+            if trimmed.startswith(("#", "//", "/*", "*", "'''", '"""')) or (trimmed.startswith(('"', "'")) and trimmed.endswith(('",', "',", '"', "'"))):
+                continue
             match = self._pattern.search(line)
             if match:
                 secret_value = match.group(1)
@@ -130,6 +133,9 @@ class SQLInjectionRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
+            trimmed = line.strip()
+            if trimmed.startswith(("#", "//", "/*", "*", "'''", '"""')) or (trimmed.startswith(('"', "'")) and trimmed.endswith(('",', "',", '"', "'"))):
+                continue
             match = self._pattern.search(line)
             if match:
                 findings.append(
@@ -201,6 +207,9 @@ class CommandInjectionRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
+            trimmed = line.strip()
+            if trimmed.startswith(("#", "//", "/*", "*", "'''", '"""')) or (trimmed.startswith(('"', "'")) and trimmed.endswith(('",', "',", '"', "'"))):
+                continue
             match = self._pattern.search(line)
             if match:
                 findings.append(
@@ -264,7 +273,7 @@ class DangerousFunctionRule(SecurityRule):
             ),
         )
         self._pattern = re.compile(
-            r"""\b(?:strcpy|strcat|gets|sprintf)\s*\(|\b(?:pickle\.loads|eval|yaml\.load\s*\(.*Loader\s*=\s*(?:yaml\.)?Loader)\b"""
+            r"""\b(?:strcpy|strcat|gets|sprintf)\s*\(|\b(?:pickle\.loads|eval)\s*\(|\byaml\.load\s*\(.*Loader\s*=\s*(?:yaml\.)?Loader\b"""
         )
 
     def evaluate(self, source_file: SourceFile, ast_tree: Optional[Any] = None) -> List[AuditFinding]:
@@ -272,6 +281,9 @@ class DangerousFunctionRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
+            trimmed = line.strip()
+            if trimmed.startswith(("#", "//", "/*", "*", "'''", '"""')) or (trimmed.startswith(('"', "'")) and trimmed.endswith(('",', "',", '"', "'"))):
+                continue
             match = self._pattern.search(line)
             if match:
                 invoked_fn = match.group(0).strip()
@@ -353,6 +365,9 @@ class WeakCryptoRule(SecurityRule):
         lines = source_file.content.splitlines()
 
         for idx, line in enumerate(lines, start=1):
+            trimmed = line.strip()
+            if trimmed.startswith(("#", "//", "/*", "*", "'''", '"""')) or (trimmed.startswith(('"', "'")) and trimmed.endswith(('",', "',", '"', "'"))):
+                continue
             match = self._pattern.search(line)
             if match:
                 invoked_crypto = match.group(0).strip()
