@@ -198,9 +198,13 @@ class PatchValidator:
         """
         US 21: Validate a proposed Patch object in-memory before disk modification.
         Verifies that modified_code has valid syntax and returns detailed diagnostic messages.
+        Prevents dangerous blank or whitespace-only patch wipes on non-empty files.
         """
-        if not patch.modified_code and patch.original_code:
-            return False, "Candidate patch produced empty modified code from non-empty original."
+        has_orig = bool(patch.original_code and patch.original_code.strip())
+        has_mod = bool(patch.modified_code and patch.modified_code.strip())
+
+        if has_orig and not has_mod:
+            return False, "Candidate patch produced empty or whitespace-only modified code from non-empty original."
 
         lang = self.detect_language(patch.file_path)
         return self.validate_virtual_syntax(

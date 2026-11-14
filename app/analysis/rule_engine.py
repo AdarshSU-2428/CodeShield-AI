@@ -60,10 +60,18 @@ class RuleEngine:
         )
         content = getattr(source_file, "content", "")
 
+        lines = content.splitlines() if content else []
+
         for rule in applicable_rules:
             try:
                 rule_findings = rule.evaluate(source_file=source_file, ast_tree=ast_tree)
                 for f in rule_findings:
+                    # Inline developer suppression support (# codeshield: ignore, # nosec)
+                    if lines and 1 <= f.start_line <= len(lines):
+                        line_text = lines[f.start_line - 1]
+                        if any(s in line_text for s in ("codeshield: ignore", "codeshield:ignore", "# nosec", "// nosec")):
+                            continue
+
                     if not f.file_path:
                         f.file_path = rel_path or abs_path
                     if not getattr(f, "relative_file_path", None):
@@ -75,12 +83,11 @@ class RuleEngine:
                         if not f.context_snippet or not f.context_snippet.strip():
                             f.extract_context_snippet(content)
                         if not f.code_snippet:
-                            lines = content.splitlines()
                             if lines and 1 <= f.start_line <= len(lines):
                                 s_idx = max(1, f.start_line)
                                 e_idx = min(len(lines), max(s_idx, f.end_line))
                                 f.code_snippet = "\n".join(lines[s_idx - 1:e_idx])
-                findings.extend(rule_findings)
+                    findings.append(f)
             except Exception:
                 # Rule execution is isolated: a failure in one rule never halts others
                 continue

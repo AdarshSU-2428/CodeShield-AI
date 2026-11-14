@@ -4,8 +4,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from sklearn.metrics.pairwise import cosine_similarity
 
+from app.core.interfaces.embedding import EmbeddingService
 
-class LocalEmbeddingService:
+
+class LocalEmbeddingService(EmbeddingService):
     """
     Generates text and code embeddings completely locally on the developer's machine.
     Zero external network transmission; supports local Chroma embedding functions and deterministic hashing fallbacks.
@@ -49,7 +51,7 @@ class LocalEmbeddingService:
         if not text or not text.strip():
             return [0.0] * self.dimension
 
-        cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()
+        cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if cache_key in self._cache:
             return self._cache[cache_key]
 
@@ -72,6 +74,10 @@ class LocalEmbeddingService:
         if not documents:
             return []
         return [self.embed_text(doc) for doc in documents]
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Alias conforming to EmbeddingService interface for batch embeddings."""
+        return self.embed_documents(texts)
 
     def compute_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
         """Compute cosine similarity between two local vectors using sklearn."""

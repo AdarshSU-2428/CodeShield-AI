@@ -35,12 +35,17 @@ class LocalContextRetriever:
         self.max_context_snippets: int = max(1, max_context_snippets)
         self.max_chars_per_snippet: int = max(1000, max_chars_per_snippet)
 
-    def _truncate_at_line_boundary(self, content: str, max_chars: int) -> str:
+    def _truncate_at_line_boundary(self, content: Optional[str], max_chars: int) -> str:
         """
         Truncate large files strictly at complete line boundaries, ensuring functions
         and expressions are never cut in the middle of a line or token.
+        Gracefully handles None, empty strings, and zero/negative character budgets.
         """
-        if len(content) <= max_chars:
+        if content is None or not content:
+            return ""
+
+        effective_limit = max(0, max_chars)
+        if len(content) <= effective_limit:
             return content
 
         lines = content.splitlines(keepends=True)
@@ -48,13 +53,14 @@ class LocalContextRetriever:
         current_len = 0
 
         for line in lines:
-            if current_len + len(line) > max_chars:
+            if current_len + len(line) > effective_limit:
                 break
             accumulated.append(line)
             current_len += len(line)
 
         if not accumulated:
-            return lines[0].rstrip() + "\n# [TRUNCATED REMAINING LINES CLEANLY]"
+            first_line = lines[0].rstrip() if lines else ""
+            return first_line + "\n# [TRUNCATED REMAINING LINES CLEANLY]"
 
         return "".join(accumulated).rstrip() + "\n\n# [TRUNCATED REMAINING LINES CLEANLY]"
 
