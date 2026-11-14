@@ -40,8 +40,17 @@ class ComponentExtractor:
         if not tree or not tree.root_node:
             return []
         
-        effective_lang = language if language else (source_file.language if source_file else Language.UNKNOWN)
+        effective_lang = language if language else (source_file.language if source_file and source_file.language != Language.UNKNOWN else None)
         file_path = source_file.file_path if source_file else "unknown"
+
+        # Fallback language detection via file path if still unknown
+        if not effective_lang and file_path and file_path != "unknown":
+            from app.analysis.language_detector import default_language_detector
+            effective_lang = default_language_detector.detect_language(file_path=file_path)
+
+        if not effective_lang:
+            effective_lang = Language.UNKNOWN
+        
         components: List[CodeComponent] = []
         code_bytes = source_code.encode("utf-8") if isinstance(source_code, str) else source_code
         

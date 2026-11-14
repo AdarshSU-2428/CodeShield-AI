@@ -25,3 +25,8 @@ class CodeParser(ABC):
         Used for verification and patch safety (US 21).
         """
         pass
+
+
+# Backward compatibility and polyglot alias
+PolyglotParser = CodeParser
+
