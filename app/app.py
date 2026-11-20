@@ -9,8 +9,17 @@ Combines all REST API routers:
 - Static file serving for desktop frontend in app/ui
 """
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Ensure the root project directory is in sys.path when executed directly as `python app/app.py`
+_inner_dir = Path(__file__).resolve().parent
+_project_root = _inner_dir.parent
+sys.path = [p for p in sys.path if Path(p).resolve() != _inner_dir]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -114,3 +123,18 @@ def root_redirect():
 ui_dir = Path(__file__).resolve().parent / "ui"
 if ui_dir.is_dir():
     app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+
+
+if __name__ == "__main__":
+    import sys
+    import uvicorn
+
+    # Ensure project root is in sys.path when executed directly as `python app/app.py`
+    project_root = Path(__file__).resolve().parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    print("🛡️ Starting CodeShield AI backend on http://127.0.0.1:8000 ...")
+    print("📖 Swagger UI Docs available at: http://127.0.0.1:8000/docs")
+    uvicorn.run("app.app:app", host="127.0.0.1", port=8000, reload=True)
+

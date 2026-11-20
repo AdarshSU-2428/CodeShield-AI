@@ -29,7 +29,7 @@ class AIVulnerabilityAnalyzer:
         retriever: Optional[LocalContextRetriever] = None,
         context_builder: Optional[ContextBuilder] = None,
         finding_validator: Optional[FindingValidator] = None,
-        max_file_size_chars: int = 50000,
+        max_file_size_chars: int = 12000,
         temperature: float = 0.1,
     ):
         self.llm_client: LLMClient = llm_client if llm_client is not None else GroqLLMClient()

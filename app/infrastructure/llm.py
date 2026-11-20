@@ -117,13 +117,21 @@ class GroqLLMClient(LLMClient):
 
         while True:
             try:
-                return self._client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            except (RateLimitError, APIConnectionError, TimeoutError, ConnectionError, OSError) as exc:
+                call_kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                # Hide internal reasoning format for reasoning models so output tokens are reserved for JSON
+                if "gpt-oss" in model or "r1" in model or "deepseek" in model:
+                    call_kwargs["reasoning_format"] = "hidden"
+
+                return self._client.chat.completions.create(**call_kwargs)
+            except RateLimitError as exc:
+                logger.warning(f"Rate limit exceeded on '{model}': {exc}. Triggering model failover.")
+                raise RuntimeError(f"Rate limit exceeded on '{model}': {exc}") from exc
+            except (APIConnectionError, TimeoutError, ConnectionError, OSError) as exc:
                 attempts += 1
                 logger.warning(
                     f"Transient cloud error on '{model}' (attempt {attempts}/{self._max_retries}): {exc}"
@@ -240,6 +248,45 @@ class GroqLLMClient(LLMClient):
                 raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
             return parsed
         except json.JSONDecodeError as exc:
+            # Resilient recovery: extract all completed vulnerability objects from truncated responses
+            recovered_items = []
+            brace_depth = 0
+            start_idx = None
+            in_str = False
+            escape = False
+            for idx, ch in enumerate(cleaned_json):
+                if in_str:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        if brace_depth == 0:
+                            start_idx = idx
+                        brace_depth += 1
+                    elif ch == "}":
+                        brace_depth -= 1
+                        if brace_depth == 0 and start_idx is not None:
+                            block = cleaned_json[start_idx : idx + 1]
+                            try:
+                                obj = json.loads(block)
+                                if isinstance(obj, dict) and ("title" in obj or "cwe_id" in obj):
+                                    recovered_items.append(obj)
+                            except Exception:
+                                pass
+                            start_idx = None
+
+            if recovered_items:
+                logger.info(
+                    f"Recovered {len(recovered_items)} vulnerability findings from truncated LLM response."
+                )
+                return {"vulnerabilities": recovered_items}
+
             logger.warning(f"Malformed JSON from LLM: {exc}")
             raise ValueError(
                 f"Failed to parse LLM response as JSON. Content received: '{cleaned_json[:200]}'"
