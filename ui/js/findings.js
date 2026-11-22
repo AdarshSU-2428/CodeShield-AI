@@ -1,8 +1,3 @@
-/**
- * CodeShield AI - Findings & Threat Intelligence Controller
- * Manages the Issues feed, search filters, and Right Inspector detail card.
- */
-
 export class FindingsController {
   constructor(options = {}) {
     this.listContainer = document.getElementById("issuesListContainer");
@@ -11,8 +6,8 @@ export class FindingsController {
     this.inspectorContent = document.getElementById("inspectorContent");
     this.inspectorBadge = document.getElementById("inspectorSeverityBadge");
 
-    this.onSelectFinding = options.onSelectFinding || (() => {});
-    this.onProposePatch = options.onProposePatch || (() => {});
+    this.onSelectFinding = options.onSelectFinding || (() => { });
+    this.onProposePatch = options.onProposePatch || (() => { });
 
     this.findings = [];
     this.activeFilter = "ALL";
@@ -66,7 +61,7 @@ export class FindingsController {
     let filtered = this.findings.filter(f => {
       const sev = (f.severity || "").toUpperCase();
       const cat = (f.category || "").toUpperCase();
-      
+
       let matchesFilter = true;
       if (this.activeFilter !== "ALL") {
         if (this.activeFilter === "CODE_QUALITY") {

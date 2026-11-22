@@ -1,8 +1,3 @@
-/**
- * CodeShield AI - Surgical Patch Console Controller
- * Handles Mode 1 (file-by-file surgical review) and Mode 2 (batch whole-project) patching.
- */
-
 import { api } from "./api.js";
 
 export class PatchesController {

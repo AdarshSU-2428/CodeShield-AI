@@ -1,20 +1,11 @@
-/**
- * CodeShield AI - Central API Client Module
- * Handles all HTTP communication with the FastAPI backend endpoints:
- * - /api/health
- * - /api/projects/*
- * - /api/audit/*
- * - /api/patches/*
- */
-
-export const API_BASE = 
+export const API_BASE =
   window.location.origin.startsWith("http://127.0.0.1:8000") || window.location.origin.startsWith("http://localhost:8000")
     ? window.location.origin
     : "http://127.0.0.1:8000";
 
 export const api = {
   // --- Health Diagnostics ---
-  getHealth: () => 
+  getHealth: () =>
     fetch(`${API_BASE}/api/health`).then(r => r.json()),
 
   // --- Project Workspace ---
@@ -70,12 +61,12 @@ export const api = {
     }).then(r => r.json()),
 
   validatePatch: (patchId) =>
-    fetch(`${API_BASE}/api/patches/${patchId}/validate`, { 
-      method: "POST" 
+    fetch(`${API_BASE}/api/patches/${patchId}/validate`, {
+      method: "POST"
     }).then(r => r.json()),
 
   approvePatch: (patchId, approvedBy = "reviewer") =>
-    fetch(`${API_BASE}/api/patches/${patchId}/approve`, { 
+    fetch(`${API_BASE}/api/patches/${patchId}/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ approved_by: approvedBy }),
@@ -86,8 +77,8 @@ export const api = {
     }),
 
   applyPatch: (patchId, requireApproval = true) =>
-    fetch(`${API_BASE}/api/patches/${patchId}/apply?require_approval=${requireApproval}`, { 
-      method: "POST" 
+    fetch(`${API_BASE}/api/patches/${patchId}/apply?require_approval=${requireApproval}`, {
+      method: "POST"
     }).then(async r => {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Apply failed");
@@ -95,8 +86,8 @@ export const api = {
     }),
 
   rollbackPatch: (patchId) =>
-    fetch(`${API_BASE}/api/patches/${patchId}/rollback`, { 
-      method: "POST" 
+    fetch(`${API_BASE}/api/patches/${patchId}/rollback`, {
+      method: "POST"
     }).then(async r => {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Rollback failed");

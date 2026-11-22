@@ -1,8 +1,3 @@
-/**
- * CodeShield AI - Project & File Explorer Controller
- * Handles project registration, dropdown switching, and recursive tree rendering.
- */
-
 import { api } from "./api.js";
 
 export class ProjectController {
@@ -11,8 +6,8 @@ export class ProjectController {
     this.treeContainer = document.getElementById("fileTreeContainer");
     this.breadcrumbEl = document.getElementById("breadcrumbPath");
     this.langBadgeEl = document.getElementById("fileLanguageBadge");
-    this.onFileSelect = options.onFileSelect || (() => {});
-    
+    this.onFileSelect = options.onFileSelect || (() => { });
+
     this.currentProjectId = null;
     this.currentProjectName = "";
     this.currentTree = null;

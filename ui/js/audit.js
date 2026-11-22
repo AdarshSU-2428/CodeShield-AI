@@ -1,8 +1,3 @@
-/**
- * CodeShield AI - Audit Pipeline & HUD Controller
- * Manages background audit jobs, live progress polling, metrics counters, and report exports.
- */
-
 import { api } from "./api.js";
 
 export class AuditController {
@@ -23,7 +18,7 @@ export class AuditController {
     this.btnExportSarif = document.getElementById("btnExportSarif");
     this.btnExportZip = document.getElementById("btnExportZip");
 
-    this.onAuditComplete = options.onAuditComplete || (() => {});
+    this.onAuditComplete = options.onAuditComplete || (() => { });
     this.currentProjectId = null;
     this.currentJobId = null;
     this.pollInterval = null;
