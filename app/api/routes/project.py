@@ -177,6 +177,7 @@ def get_project_tree(project_id: str):
 
 
 @router.get("/{project_id}/file-content", response_model=FileContentResponse)
+@router.get("/{project_id}/file", response_model=FileContentResponse)
 def get_file_content(
     project_id: str,
     path: str = Query(..., description="Relative or absolute path of file to view"),
@@ -250,3 +251,11 @@ def get_project_changes(project_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(val_err))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error detecting changes: {exc}")
+
+
+@router.get("/{project_id}/export-zip")
+def export_project_zip_alias(project_id: str):
+    """Alias for /api/patches/export-zip/{project_id}."""
+    from app.api.routes.patch import export_patched_project_zip
+    return export_patched_project_zip(project_id)
+

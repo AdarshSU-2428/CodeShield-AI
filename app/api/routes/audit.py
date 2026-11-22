@@ -217,6 +217,7 @@ def download_sarif(job_id: str):
 
 
 @router.get("/jobs/{job_id}/markdown")
+@router.get("/jobs/{job_id}/report.md")
 def download_markdown(job_id: str):
     """
     Export a human-readable Markdown summary report of all detected vulnerabilities.

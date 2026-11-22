@@ -1,6 +1,9 @@
+import io
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import zipfile
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import Response
 
 from app.api.routes.audit import audit_service
 from app.api.routes.project import project_service
@@ -11,6 +14,7 @@ from app.api.schemas import (
     BatchProposeResponse,
     BatchRollbackRequest,
     BatchRollbackResponse,
+    GenerateAIPatchRequest,
     PatchApplyResponse,
     PatchApprovalRequest,
     PatchProposeRequest,
@@ -91,6 +95,60 @@ def propose_patch(req: PatchProposeRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to propose patch: {exc}")
 
 
+@router.post("/generate-ai", response_model=PatchResponse, status_code=status.HTTP_201_CREATED)
+def generate_ai_remediation_patch(req: GenerateAIPatchRequest):
+    """
+    US 14: Dynamic AI Remediation Patch Generation using Groq LLM.
+    Synthesizes drop-in polyglot replacement code for specific security findings.
+    """
+    from app.core.models.audit import AuditFinding
+
+    # 1. Guard against single-file auto-patching of broad architectural smells
+    cat = (req.category or "").lower()
+    if cat in ("architecture", "architectural"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Architectural smells (High-Coupling Hubs, Monolithic Modules) involve cross-file structural "
+                "redesign and cannot be patched via single-line automated code replacement. "
+                "Please follow the architectural remediation steps provided in the Threat Intelligence Inspector."
+            ),
+        )
+
+    # 2. Retrieve finding from stored reports if finding_id is provided
+    target_finding = None
+    if req.finding_id:
+        for r in audit_service._reports.values():
+            for f in r.findings:
+                if f.finding_id == req.finding_id:
+                    target_finding = f
+                    break
+            if target_finding:
+                break
+
+    if not target_finding:
+        target_finding = AuditFinding(
+            title=req.title or "Security Vulnerability",
+            description=req.recommendation or "AI Remediated Finding",
+            cwe_id=req.cwe_id,
+            file_path=req.file_path,
+            line_number=req.line_number or 1,
+            recommendation=req.recommendation or "Fix vulnerability securely.",
+        )
+
+    try:
+        patch = patch_service.generate_ai_patch(
+            file_path=req.file_path,
+            finding=target_finding,
+        )
+        return _serialize_patch(patch)
+    except FileNotFoundError as fnf:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(fnf))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI patch generation failed: {exc}")
+
+
+
 @router.get("", response_model=List[PatchResponse])
 def list_patches(
     file_path: Optional[str] = Query(None, description="Optional filter by target file path"),
@@ -108,6 +166,7 @@ def list_patches(
 
 # BULK PROJECT BATCH REMEDIATION ENDPOINTS
 @router.post("/batch/propose-project", response_model=BatchProposeResponse)
+@router.post("/batch/propose", response_model=BatchProposeResponse)
 def batch_propose_project(req: BatchProposeProjectRequest):
     """
     Generate candidate remediation patches for all actionable findings in a project.
@@ -233,6 +292,7 @@ def get_patch(patch_id: str):
 
 
 @router.get("/{patch_id}/validate")
+@router.post("/{patch_id}/validate")
 def validate_patch_syntax(patch_id: str):
     """
     US 21: Pre-patch in-memory syntax inspection across Python, JS, Java, C, and C++.
@@ -255,7 +315,7 @@ def validate_patch_syntax(patch_id: str):
 
 
 @router.post("/{patch_id}/approve", response_model=PatchResponse)
-def approve_patch(patch_id: str, req: PatchApprovalRequest):
+def approve_patch(patch_id: str, req: Optional[PatchApprovalRequest] = None):
     """
     US 30: Explicitly approve a proposed patch, unblocking it for disk application.
     Records approver ID and timestamp.
@@ -264,15 +324,16 @@ def approve_patch(patch_id: str, req: PatchApprovalRequest):
     if not patch:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Patch '{patch_id}' not found.")
 
+    approver = req.approved_by if (req and req.approved_by) else "reviewer"
     try:
-        updated = patch_service.approve_patch(patch_id=patch_id, approved_by=req.approved_by)
+        updated = patch_service.approve_patch(patch_id=patch_id, approved_by=approver)
         return _serialize_patch(updated)
     except ValueError as val_err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(val_err))
 
 
 @router.post("/{patch_id}/reject", response_model=PatchResponse)
-def reject_patch(patch_id: str, req: PatchRejectionRequest):
+def reject_patch(patch_id: str, req: Optional[PatchRejectionRequest] = None):
     """
     US 30: Explicitly reject a proposed patch with a recorded rationale.
     """
@@ -280,8 +341,9 @@ def reject_patch(patch_id: str, req: PatchRejectionRequest):
     if not patch:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Patch '{patch_id}' not found.")
 
+    reason = req.reason if (req and req.reason) else "Rejected by user"
     try:
-        rejected = patch_service.reject_patch(patch_id=patch_id, reason=req.reason)
+        rejected = patch_service.reject_patch(patch_id=patch_id, reason=reason)
         return _serialize_patch(rejected)
     except ValueError as val_err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(val_err))
@@ -343,3 +405,65 @@ def rollback_patch(patch_id: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(val_err))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Rollback failed: {exc}")
+
+
+@router.get("/export-zip/{project_id}")
+@router.get("/export-project-zip/{project_id}")
+def export_patched_project_zip(project_id: str):
+    """
+    Non-destructive sandbox export: bundles the entire project into a ZIP file.
+    Files with active proposed or applied patches have their patched contents included.
+    All other files retain their original contents.
+    The user's local disk repository remains 100% untouched.
+    """
+    project = project_service.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found.")
+
+    root_path = Path(project.root_path).resolve()
+    if not root_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Project root path does not exist on disk: {root_path}")
+
+    # Map target normalized file paths to their latest patched code
+    patched_code_by_path = {}
+    for patch in patch_service._patches.values():
+        if patch.modified_code:
+            norm = Path(patch.file_path).resolve().as_posix()
+            patched_code_by_path[norm] = patch.modified_code
+
+    # Build in-memory zip
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in root_path.rglob("*"):
+            if not p.is_file():
+                continue
+            # Skip ignored directories and files
+            if project_service.scanner.should_ignore_file(p.name):
+                continue
+            rel_parts = p.relative_to(root_path).parts
+            if any(project_service.scanner.should_ignore_dir(part) for part in rel_parts[:-1]):
+                continue
+
+            rel_path_str = p.relative_to(root_path).as_posix()
+            norm = p.resolve().as_posix()
+
+            if norm in patched_code_by_path:
+                content = patched_code_by_path[norm].encode("utf-8")
+            else:
+                try:
+                    content = p.read_bytes()
+                except Exception:
+                    continue
+
+            zf.writestr(rel_path_str, content)
+
+    zip_buffer.seek(0)
+    safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in project.name).strip("_")
+    filename = f"{safe_name}_patched.zip"
+
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
