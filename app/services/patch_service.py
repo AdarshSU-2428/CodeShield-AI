@@ -1,3 +1,4 @@
+import ast
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -95,6 +96,8 @@ class PatchService:
     def _clean_markdown_code(self, raw_code: str) -> str:
         """Extract clean source code from AI response if wrapped in markdown code fences."""
         text = raw_code.strip()
+
+        # 1. Closed code blocks
         blocks = re.findall(r"```(\w*)\s*([\s\S]*?)```", text)
         if blocks:
             code_blocks = [
@@ -106,7 +109,34 @@ class PatchService:
                 return max(code_blocks, key=len)
             return max((content.strip() for _, content in blocks), key=len)
 
-        return text
+        # 2. Unclosed code block: starts with ```python ... but never closed (e.g. truncated)
+        unclosed = re.search(r"^```[a-zA-Z0-9_-]*\s*\n([\s\S]*)$", text)
+        if unclosed:
+            text = unclosed.group(1).strip()
+
+        # 3. Strip any stray markdown fence lines anywhere
+        lines = text.splitlines()
+        filtered = [l for l in lines if not l.strip().startswith("```")]
+        return "\n".join(filtered).strip()
+
+    def _extract_enclosing_function_scope(self, source_code: str, line_number: int) -> Optional[Tuple[int, int, str]]:
+        """Find the enclosing function definition around a target line using AST parsing."""
+        try:
+            tree = ast.parse(source_code)
+            target_node = None
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if hasattr(node, "lineno") and hasattr(node, "end_lineno"):
+                        if node.lineno <= line_number <= node.end_lineno:
+                            if target_node is None or (node.end_lineno - node.lineno < target_node.end_lineno - target_node.lineno):
+                                target_node = node
+            if target_node:
+                lines = source_code.splitlines(keepends=True)
+                func_code = "".join(lines[target_node.lineno - 1 : target_node.end_lineno])
+                return (target_node.lineno, target_node.end_lineno, func_code)
+        except Exception:
+            return None
+        return None
 
     def generate_ai_patch(
         self,
@@ -120,24 +150,71 @@ class PatchService:
             raise FileNotFoundError(f"Source file not found: {target_path}")
 
         original_code = self.filesystem.read_text(target_path)
+        total_lines = len(original_code.splitlines())
 
-        prompt = (
-            f"You are an expert security engineer. Fix the following vulnerability in the provided code.\n\n"
-            f"Vulnerability Title: {finding.title}\n"
-            f"CWE ID: {finding.cwe_id}\n"
-            f"Line Number: {finding.line_number}\n"
-            f"Recommendation: {finding.recommendation}\n\n"
-            f"Original Source Code:\n{original_code}\n\n"
-            f"Output ONLY the complete, remediated source code. Do NOT add conversational text or markdown explanation."
-        )
+        # If file is large (> 80 lines) and is Python, use AST-guided surgical function patching
+        enclosing_scope = None
+        target_line = finding.line_number or (finding.start_line if hasattr(finding, "start_line") else 1) or 1
+        if total_lines > 80 and target_path.suffix == ".py" and target_line > 1:
+            enclosing_scope = self._extract_enclosing_function_scope(original_code, target_line)
 
-        messages = [
-            {"role": "system", "content": "You output only clean, valid, drop-in replacement source code."},
-            {"role": "user", "content": prompt},
-        ]
+        if enclosing_scope:
+            start_line, end_line, func_code = enclosing_scope
+            prompt = (
+                f"You are an expert security engineer. Fix the following code issue in this Python method.\n\n"
+                f"Issue Title: {finding.title}\n"
+                f"CWE ID: {finding.cwe_id}\n"
+                f"Line Number: {finding.line_number}\n"
+                f"Recommendation: {finding.recommendation}\n\n"
+                f"Method Source Code:\n```python\n{func_code}\n```\n\n"
+                f"Output ONLY the complete, remediated replacement method. Maintain the exact same indentation and function signature. Do NOT add conversational text or markdown explanation."
+            )
+            messages = [
+                {"role": "system", "content": "You output only the refactored replacement python method with identical indentation."},
+                {"role": "user", "content": prompt},
+            ]
+            response = self.llm_client.chat(messages=messages, temperature=0.0)
+            cleaned_func = self._clean_markdown_code(response.content)
 
-        response = self.llm_client.chat(messages=messages, temperature=0.0)
-        remediated_code = self._clean_markdown_code(response.content)
+            lines = original_code.splitlines(keepends=True)
+
+            # Adjust indentation of cleaned_func to match the original method's base indentation
+            orig_first_line = lines[start_line - 1]
+            base_indent = len(orig_first_line) - len(orig_first_line.lstrip())
+            cleaned_lines = cleaned_func.splitlines(keepends=True)
+            if cleaned_lines:
+                first_cleaned = cleaned_lines[0]
+                llm_indent = len(first_cleaned) - len(first_cleaned.lstrip())
+                diff = base_indent - llm_indent
+                if diff > 0:
+                    pad = " " * diff
+                    cleaned_lines = [pad + l if l.strip() else l for l in cleaned_lines]
+                elif diff < 0:
+                    strip_count = abs(diff)
+                    cleaned_lines = [l[strip_count:] if l.startswith(" " * strip_count) else l for l in cleaned_lines]
+                cleaned_func = "".join(cleaned_lines)
+
+            remediated_code = (
+                "".join(lines[:start_line - 1])
+                + (cleaned_func + "\n" if not cleaned_func.endswith("\n") else cleaned_func)
+                + "".join(lines[end_line:])
+            )
+        else:
+            prompt = (
+                f"You are an expert security engineer. Fix the following vulnerability in the provided code.\n\n"
+                f"Vulnerability Title: {finding.title}\n"
+                f"CWE ID: {finding.cwe_id}\n"
+                f"Line Number: {finding.line_number}\n"
+                f"Recommendation: {finding.recommendation}\n\n"
+                f"Original Source Code:\n{original_code}\n\n"
+                f"Output ONLY the complete, remediated source code. Do NOT add conversational text or markdown explanation."
+            )
+            messages = [
+                {"role": "system", "content": "You output only clean, valid, drop-in replacement source code."},
+                {"role": "user", "content": prompt},
+            ]
+            response = self.llm_client.chat(messages=messages, temperature=0.0)
+            remediated_code = self._clean_markdown_code(response.content)
 
         return self.propose_patch(
             file_path=target_path,
