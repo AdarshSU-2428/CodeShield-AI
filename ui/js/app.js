@@ -1,8 +1,3 @@
-/**
- * CodeShield AI - Main Application Coordinator
- * Boots up the UI, handles health telemetry, sidebar tab toggles, and event communication.
- */
-
 import { api } from "./api.js";
 import { CodeEditor } from "./editor.js";
 import { ProjectController } from "./project.js";

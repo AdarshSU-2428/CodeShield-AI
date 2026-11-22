@@ -1,8 +1,3 @@
-/* ==============================================================================
-   CodeShield AI - Desktop Dark-Mode Design System
-   Inspired by VS Code, GitHub Advanced Security, and SonarQube
-   ============================================================================== */
-
 :root {
   /* Surface Colors */
   --bg-primary: #0d1117;
@@ -79,9 +74,7 @@ body {
   overflow: hidden;
 }
 
-/* -----------------------------------------------------------------------------
-   Top Navigation Header
-   ----------------------------------------------------------------------------- */
+/*Top Navigation Header*/
 .app-header {
   height: 52px;
   background-color: var(--bg-secondary);
@@ -94,7 +87,9 @@ body {
   z-index: 20;
 }
 
-.header-left, .header-center, .header-right {
+.header-left,
+.header-center,
+.header-right {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -206,7 +201,10 @@ body {
 .slider {
   position: absolute;
   cursor: pointer;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   background-color: var(--border-color);
   transition: var(--transition-fast);
   border-radius: 16px;
@@ -224,11 +222,11 @@ body {
   border-radius: 50%;
 }
 
-input:checked + .slider {
+input:checked+.slider {
   background-color: var(--brand-primary);
 }
 
-input:checked + .slider:before {
+input:checked+.slider:before {
   transform: translateX(12px);
 }
 
@@ -342,9 +340,7 @@ input:checked + .slider:before {
   color: white;
 }
 
-/* -----------------------------------------------------------------------------
-   Main Workspace Layout (3-Columns Grid)
-   ----------------------------------------------------------------------------- */
+/*Main Workspace Layout (3-Columns Grid)*/
 .workspace-grid {
   display: grid;
   grid-template-columns: 280px 1fr 340px;
@@ -353,9 +349,7 @@ input:checked + .slider:before {
   background-color: var(--bg-canvas);
 }
 
-/* -----------------------------------------------------------------------------
-   Column 1: Sidebar (Explorer & Issues)
-   ----------------------------------------------------------------------------- */
+/*Column 1: Sidebar (Explorer & Issues)*/
 .sidebar-panel {
   background-color: var(--bg-primary);
   border-right: 1px solid var(--border-color);
@@ -505,10 +499,25 @@ input:checked + .slider:before {
   border-color: var(--brand-primary);
 }
 
-.chip-critical.active { background: var(--sev-critical); border-color: var(--sev-critical); }
-.chip-high.active { background: var(--sev-high); border-color: var(--sev-high); }
-.chip-medium.active { background: var(--sev-medium); border-color: var(--sev-medium); }
-.chip-quality.active { background: var(--sev-quality); border-color: var(--sev-quality); }
+.chip-critical.active {
+  background: var(--sev-critical);
+  border-color: var(--sev-critical);
+}
+
+.chip-high.active {
+  background: var(--sev-high);
+  border-color: var(--sev-high);
+}
+
+.chip-medium.active {
+  background: var(--sev-medium);
+  border-color: var(--sev-medium);
+}
+
+.chip-quality.active {
+  background: var(--sev-quality);
+  border-color: var(--sev-quality);
+}
 
 .issue-item {
   padding: 8px 10px;
@@ -597,14 +606,23 @@ input:checked + .slider:before {
   font-weight: 700;
 }
 
-.metric-critical { color: var(--sev-critical); }
-.metric-high { color: var(--sev-high); }
-.metric-medium { color: var(--sev-medium); }
-.metric-quality { color: var(--sev-quality); }
+.metric-critical {
+  color: var(--sev-critical);
+}
 
-/* -----------------------------------------------------------------------------
-   Column 2: Center Code Viewer
-   ----------------------------------------------------------------------------- */
+.metric-high {
+  color: var(--sev-high);
+}
+
+.metric-medium {
+  color: var(--sev-medium);
+}
+
+.metric-quality {
+  color: var(--sev-quality);
+}
+
+/*Column 2: Center Code Viewer*/
 .editor-panel {
   display: flex;
   flex-direction: column;
@@ -724,9 +742,7 @@ input:checked + .slider:before {
   border-left: 3px solid var(--sev-quality);
 }
 
-/* -----------------------------------------------------------------------------
-   Column 3: Right Inspector (Threat Intelligence)
-   ----------------------------------------------------------------------------- */
+/*Column 3: Right Inspector (Threat Intelligence)*/
 .inspector-panel {
   background-color: var(--bg-primary);
   border-left: 1px solid var(--border-color);
@@ -759,10 +775,29 @@ input:checked + .slider:before {
   text-transform: uppercase;
 }
 
-.badge-severity.critical { background: var(--sev-critical-bg); color: var(--sev-critical); border: 1px solid var(--sev-critical-border); }
-.badge-severity.high { background: var(--sev-high-bg); color: var(--sev-high); border: 1px solid var(--sev-high-border); }
-.badge-severity.medium { background: var(--sev-medium-bg); color: var(--sev-medium); border: 1px solid var(--sev-medium-border); }
-.badge-severity.code_quality { background: var(--sev-quality-bg); color: var(--sev-quality); border: 1px solid var(--sev-quality-border); }
+.badge-severity.critical {
+  background: var(--sev-critical-bg);
+  color: var(--sev-critical);
+  border: 1px solid var(--sev-critical-border);
+}
+
+.badge-severity.high {
+  background: var(--sev-high-bg);
+  color: var(--sev-high);
+  border: 1px solid var(--sev-high-border);
+}
+
+.badge-severity.medium {
+  background: var(--sev-medium-bg);
+  color: var(--sev-medium);
+  border: 1px solid var(--sev-medium-border);
+}
+
+.badge-severity.code_quality {
+  background: var(--sev-quality-bg);
+  color: var(--sev-quality);
+  border: 1px solid var(--sev-quality-border);
+}
 
 .inspector-content {
   flex: 1;
@@ -833,9 +868,7 @@ input:checked + .slider:before {
   gap: 4px;
 }
 
-/* -----------------------------------------------------------------------------
-   Bottom Slide-Up Drawer: Surgical Patch Console
-   ----------------------------------------------------------------------------- */
+/*Bottom Slide-Up Drawer: Surgical Patch Console*/
 .patch-drawer {
   background-color: var(--bg-secondary);
   border-top: 1px solid var(--border-color);
@@ -861,7 +894,8 @@ input:checked + .slider:before {
   user-select: none;
 }
 
-.drawer-left, .drawer-right {
+.drawer-left,
+.drawer-right {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -956,12 +990,13 @@ input:checked + .slider:before {
   color: #7ee787;
 }
 
-/* -----------------------------------------------------------------------------
-   Modal Dialog Styles
-   ----------------------------------------------------------------------------- */
+/*Modal Dialog Style*/
 .modal-backdrop {
   position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   background-color: rgba(0, 0, 0, 0.65);
   display: flex;
   align-items: center;
@@ -985,8 +1020,15 @@ input:checked + .slider:before {
 }
 
 @keyframes modalIn {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .modal-header {
@@ -1059,4 +1101,6 @@ input:checked + .slider:before {
 }
 
 /* Helpers */
-.hidden { display: none !important; }
+.hidden {
+  display: none !important;
+}

@@ -1,8 +1,3 @@
-/**
- * CodeShield AI - Code Editor & Viewer Module
- * Renders source code with syntax line numbers and in-line threat gutter markers.
- */
-
 export class CodeEditor {
   constructor(containerElement, onLineClick = null) {
     this.container = containerElement;
