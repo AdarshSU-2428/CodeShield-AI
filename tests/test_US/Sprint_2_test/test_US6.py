@@ -205,6 +205,8 @@ def test_us6_fallback_model_activation():
     mock_sdk.chat.completions.create.side_effect = mock_create
 
     client = GroqLLMClient(
+        model_name="llama-3.3-70b-versatile",
+        fallback_model="llama-3.1-8b-instant",
         api_key="mock_key",
         client=mock_sdk,
         max_retries=1,

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.backend_main import app
 from app.api.routes.project import project_service
 from app.api.routes.audit import audit_service
 from app.api.routes.patch import patch_service
@@ -395,3 +395,50 @@ def test_mode_2_batch_propose_apply_and_rollback(client, temp_project):
     # Invariant: Both files restored to original content
     assert py_file.read_text(encoding="utf-8") == py_orig
     assert js_file.read_text(encoding="utf-8") == js_orig
+
+
+def test_export_patched_project_zip(client, temp_project):
+    """
+    Test non-destructive sandbox export: bundles the whole project into a ZIP.
+    Verifies that proposed patches replace code in the ZIP while local disk files stay 100% untouched.
+    """
+    import io
+    import zipfile
+
+    reg_res = client.post("/api/projects/register", json={"root_path": str(temp_project)})
+    assert reg_res.status_code == 201
+    project_id = reg_res.json()["project_id"]
+
+    target_file = temp_project / "src" / "db_handler.py"
+    orig_code = target_file.read_text(encoding="utf-8")
+    patched_code = orig_code + "\n# SAFE_SECURE_PARAM_BINDING\n"
+
+    # Propose patch (do NOT apply to disk)
+    prop_res = client.post(
+        "/api/patches/propose",
+        json={"file_path": str(target_file), "modified_code": patched_code, "description": "Safe patch"},
+    )
+    assert prop_res.status_code == 201
+
+    # Request ZIP export via both endpoints
+    zip_res = client.get(f"/api/projects/{project_id}/export-zip")
+    assert zip_res.status_code == 200
+    assert "application/zip" in zip_res.headers["content-type"]
+    assert "attachment" in zip_res.headers["content-disposition"]
+
+    # Open ZIP in memory
+    zf = zipfile.ZipFile(io.BytesIO(zip_res.content))
+    namelist = zf.namelist()
+    assert any("db_handler.py" in n for n in namelist)
+
+    # Find the db_handler file inside zip
+    db_handler_zip_name = next(n for n in namelist if "db_handler.py" in n)
+    extracted_content = zf.read(db_handler_zip_name).decode("utf-8")
+
+    # Invariant 1: Patched code is inside the exported ZIP!
+    assert "# SAFE_SECURE_PARAM_BINDING" in extracted_content
+
+    # Invariant 2: Local disk file is 100% UNTOUCHED!
+    assert target_file.read_text(encoding="utf-8") == orig_code
+    assert "# SAFE_SECURE_PARAM_BINDING" not in target_file.read_text(encoding="utf-8")
+
