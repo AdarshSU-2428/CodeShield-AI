@@ -234,7 +234,7 @@ class PatchValidator:
             )
 
         # Pre-application QA Syntax Validation: Check patch syntax BEFORE touching disk
-        if validate_candidate_syntax and patch.modified_code:
+        if validate_candidate_syntax:
             is_valid, err_msg = self.validate_patch_candidate(patch)
             if not is_valid:
                 raise ValueError(f"Pre-application syntax validation failed: syntax errors detected. {err_msg}")

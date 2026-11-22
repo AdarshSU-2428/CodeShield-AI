@@ -69,9 +69,17 @@ class CodeQualityAnalyzer:
         return findings
 
     def _check_nesting_depth(self, source_file: SourceFile) -> List[AuditFinding]:
-        """Detect excessively nested control structures (indentation level >= max_nesting_depth)."""
+        """Detect excessively nested control structures, grouping consecutive lines to avoid spam."""
         findings: List[AuditFinding] = []
         lines = source_file.content.splitlines()
+
+        # In Python or Java OOP files with classes, adjust baseline threshold by 1 for class + method indentation
+        effective_threshold = self.max_nesting_depth
+        if source_file.language == Language.PYTHON and any(l.strip().startswith("class ") for l in lines[:50]):
+            effective_threshold += 1
+
+        last_reported_line = -10
+        file_count = 0
 
         for idx, line in enumerate(lines, start=1):
             if not line.strip() or line.strip().startswith(("#", "//", "/*", "*")):
@@ -82,9 +90,18 @@ class CodeQualityAnalyzer:
             leading_tabs = len(line) - len(line.lstrip("\t"))
             depth = max(leading_spaces // 4, leading_tabs)
 
-            if depth >= self.max_nesting_depth:
+            if depth >= effective_threshold:
                 stripped = line.strip()
                 if any(stripped.startswith(k) for k in ("if", "for", "while", "switch", "try")):
+                    # Avoid repetitive spam within the same block (skip if reported within last 5 lines)
+                    if idx - last_reported_line < 5:
+                        continue
+                    if file_count >= 3:
+                        break
+
+                    last_reported_line = idx
+                    file_count += 1
+
                     findings.append(AuditFinding(
                         title=f"Excessive Control Flow Nesting (Depth: {depth})",
                         description=(
