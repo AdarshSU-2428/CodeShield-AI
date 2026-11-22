@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeShield AI - Code Quality & Security Auditor</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app" class="app-container">
+    
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <span class="brand-icon">🛡️</span>
+          <span class="brand-name">CodeShield <span class="brand-accent">AI</span></span>
+        </div>
+        
+        <div class="divider-v"></div>
+
+        <!-- Project Selector -->
+        <div class="project-picker">
+          <span class="picker-icon">📁</span>
+          <select id="projectSelect" class="project-dropdown" title="Select registered project">
+            <option value="" disabled selected>Select a project...</option>
+          </select>
+          <button id="btnNewProject" class="btn btn-sm btn-ghost" title="Register new project folder">+ New</button>
+        </div>
+      </div>
+
+      <!-- Center Telemetry Badges -->
+      <div class="header-center">
+        <div class="telemetry-badge" id="telemetryTreeSitter" title="Tree-sitter AST Parser">
+          <span class="status-dot"></span> Tree-sitter AST
+        </div>
+        <div class="telemetry-badge" id="telemetryChroma" title="ChromaDB Vector Store">
+          <span class="status-dot"></span> ChromaDB RAG
+        </div>
+        <div class="telemetry-badge" id="telemetryGroq" title="Groq Cloud LLM">
+          <span class="status-dot"></span> Groq LLM
+        </div>
+      </div>
+
+      <!-- Right Action Controls -->
+      <div class="header-right">
+        <div class="toggle-control" title="Enable Groq LLM Semantic Vulnerability Detection">
+          <label class="toggle-switch">
+            <input type="checkbox" id="toggleAiScan" checked>
+            <span class="slider round"></span>
+          </label>
+          <span class="toggle-label">🤖 AI Semantic Scan</span>
+        </div>
+
+        <button id="btnRunAudit" class="btn btn-primary">
+          <span class="btn-icon">▶</span> Run Audit
+        </button>
+
+        <div class="dropdown-menu-wrapper">
+          <button id="btnExportMenu" class="btn btn-secondary">
+            <span>📥</span> Export ▾
+          </button>
+          <div id="exportDropdown" class="dropdown-menu hidden">
+            <button id="btnExportMarkdown" class="dropdown-item">📄 Markdown Report (.md)</button>
+            <button id="btnExportSarif" class="dropdown-item">📊 SARIF v2.1.0 (.sarif)</button>
+            <button id="btnExportZip" class="dropdown-item">📦 Patched Project (.zip)</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Layout (3 Columns) -->
+    <main class="workspace-grid">
+      
+      <!-- Left Column: Explorer & Issues Feed -->
+      <aside class="sidebar-panel">
+        <div class="sidebar-tabs">
+          <button id="tabFiles" class="sidebar-tab active">
+            <span>📁</span> Files
+          </button>
+          <button id="tabIssues" class="sidebar-tab">
+            <span>⚠️</span> Issues <span id="issuesCountBadge" class="badge-pill count-zero">0</span>
+          </button>
+        </div>
+
+        <!-- Files View -->
+        <div id="viewFiles" class="sidebar-content">
+          <div id="fileTreeContainer" class="file-tree">
+            <div class="empty-state">Register or select a project to explore files.</div>
+          </div>
+        </div>
+
+        <!-- Issues View (Hidden by default) -->
+        <div id="viewIssues" class="sidebar-content hidden">
+          <div class="issues-filter-bar">
+            <input type="text" id="issuesSearch" class="search-input" placeholder="Filter issues (CWE, name, file)...">
+            <div class="severity-filter-chips">
+              <button class="chip active" data-filter="ALL">All</button>
+              <button class="chip chip-critical" data-filter="CRITICAL">Critical</button>
+              <button class="chip chip-high" data-filter="HIGH">High</button>
+              <button class="chip chip-medium" data-filter="MEDIUM">Med</button>
+              <button class="chip chip-quality" data-filter="CODE_QUALITY">Quality</button>
+            </div>
+          </div>
+          <div id="issuesListContainer" class="issues-list">
+            <div class="empty-state">No audit issues found yet. Run an audit to inspect findings.</div>
+          </div>
+        </div>
+
+        <!-- Bottom Audit Status HUD -->
+        <div id="auditStatusHud" class="audit-hud">
+          <div class="hud-header">
+            <span class="hud-title">Audit Engine</span>
+            <span id="hudStatusText" class="hud-status">Ready</span>
+          </div>
+          <div class="hud-progress-bar">
+            <div id="hudProgressFill" class="progress-fill" style="width: 0%;"></div>
+          </div>
+          <div class="hud-metrics">
+            <span id="hudCountCritical" class="metric-critical">🔴 0 Crit</span>
+            <span id="hudCountHigh" class="metric-high">🟠 0 High</span>
+            <span id="hudCountMedium" class="metric-medium">🟡 0 Med</span>
+            <span id="hudCountQuality" class="metric-quality">🔵 0 Qual</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center Column: Split Code Editor -->
+      <section class="editor-panel">
+        <div class="editor-header">
+          <div class="breadcrumbs">
+            <span id="breadcrumbPath" class="path-text">No file opened</span>
+          </div>
+          <div class="editor-actions">
+            <span id="fileLanguageBadge" class="badge-lang">Plain</span>
+            <button id="btnRefreshFile" class="btn btn-icon" title="Reload current file">🔄</button>
+          </div>
+        </div>
+
+        <div id="codeEditorContainer" class="code-editor-viewport">
+          <div class="editor-placeholder">
+            <span class="placeholder-icon">💻</span>
+            <h3>No File Selected</h3>
+            <p>Click on any file from the explorer on the left to view and inspect its code.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Finding Intelligence Inspector -->
+      <aside class="inspector-panel">
+        <div class="inspector-header">
+          <span class="inspector-title">Threat Intelligence</span>
+          <span id="inspectorSeverityBadge" class="badge-severity">INFO</span>
+        </div>
+
+        <div id="inspectorContent" class="inspector-content">
+          <div class="inspector-placeholder">
+            <span>🔍</span>
+            <p>Select a vulnerability from the Issues list or click a highlighted code line to inspect details.</p>
+          </div>
+        </div>
+      </aside>
+
+    </main>
+
+    <!-- Bottom Slide-Up Drawer: Surgical Patch Console -->
+    <footer id="patchDrawer" class="patch-drawer collapsed">
+      <div class="drawer-header">
+        <div class="drawer-left">
+          <button id="btnToggleDrawer" class="drawer-toggle-btn" title="Toggle Patch Console">
+            <span id="drawerToggleIcon">▲</span>
+          </button>
+          <span class="drawer-title">🔀 Patch Console</span>
+          <span id="drawerFilePath" class="drawer-file-badge">No active patch</span>
+          <span id="drawerValidationBadge" class="badge-validation hidden">✅ AST Validated</span>
+        </div>
+
+        <div class="drawer-right">
+          <button id="btnValidatePatch" class="btn btn-sm btn-ghost hidden">👁️ Validate AST</button>
+          <button id="btnApproveApplyPatch" class="btn btn-sm btn-success hidden">✅ Approve & Apply</button>
+          <button id="btnRollbackPatch" class="btn btn-sm btn-danger hidden">↩️ Rollback (.bak)</button>
+          <button id="btnBatchPatchProject" class="btn btn-sm btn-primary">⚡ Batch Patch Project</button>
+          <button id="btnDrawerExportZip" class="btn btn-sm btn-secondary" title="Export entire project with patches applied as a ZIP without altering local disk">📦 Export Patched ZIP</button>
+        </div>
+      </div>
+
+      <!-- Diff Hunk Viewer -->
+      <div id="drawerBody" class="drawer-body">
+        <div id="diffViewerContainer" class="diff-viewer">
+          <div class="diff-empty">No patch proposed yet. Select a vulnerability and click "Propose Patch" to inspect the unified diff.</div>
+        </div>
+      </div>
+    </footer>
+
+    <!-- New Project Registration Modal Dialog -->
+    <div id="modalNewProject" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3>Register New Codebase</h3>
+          <button id="btnCloseModal" class="btn-close">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="inputProjectName">Project Name</label>
+            <input type="text" id="inputProjectName" class="form-input" placeholder="e.g. AI Learning Assistant">
+          </div>
+          <div class="form-group">
+            <label for="inputProjectPath">Local Folder Path</label>
+            <input type="text" id="inputProjectPath" class="form-input" placeholder="e.g. C:/Projects/MyRepo">
+            <small class="form-help">Use forward slashes (/) or escaped backslashes (\\).</small>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCancelModal" class="btn btn-ghost">Cancel</button>
+          <button id="btnSubmitProject" class="btn btn-primary">Register Project</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Client-side Application Modules -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -159,6 +159,16 @@ class PatchProposeRequest(BaseModel):
     finding_id: Optional[str] = Field(None, description="Optional finding ID being remediated")
     description: Optional[str] = Field(None, description="Patch description")
 
+
+class GenerateAIPatchRequest(BaseModel):
+    file_path: str = Field(..., description="Target file path to remediate")
+    finding_id: Optional[str] = Field(None, description="Vulnerability finding ID")
+    title: Optional[str] = Field(None, description="Finding title")
+    cwe_id: Optional[str] = Field(None, description="CWE identifier")
+    line_number: Optional[int] = Field(1, description="Line number of finding")
+    category: Optional[str] = Field(None, description="Finding category")
+    recommendation: Optional[str] = Field(None, description="Remediation steps / recommendation")
+
     model_config = {
         "json_schema_extra": {
             "example": {

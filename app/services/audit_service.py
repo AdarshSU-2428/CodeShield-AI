@@ -9,7 +9,7 @@ from app.analysis.parser import ParserRegistry, parser_registry
 from app.analysis.quality_analyzer import ArchitecturalSmellDetector, CodeQualityAnalyzer
 from app.analysis.rule_engine import RuleEngine, default_rule_engine
 from app.analysis.scanner import RepositoryScanner
-from app.core.enums import Confidence, FindingCategory, JobStatus, Severity
+from app.core.enums import Confidence, FileStatus, FindingCategory, JobStatus, Language, Severity
 from app.core.interfaces.filesystem import FileSystem
 from app.core.models.audit import AuditFinding, AuditJob, AuditProgress, AuditReport
 from app.core.models.code import SourceFile
@@ -64,11 +64,22 @@ class AuditService:
 
     def get_job(self, job_id: str) -> Optional[AuditJob]:
         """Retrieve an audit job by its unique identifier."""
-        return self._jobs.get(job_id)
+        if job_id in self._jobs:
+            return self._jobs[job_id]
+        norm = job_id.replace("_", "-")
+        return self._jobs.get(norm)
 
     def get_report(self, job_id: str) -> Optional[AuditReport]:
         """Retrieve the final audit report for a given job."""
-        return self._reports.get(job_id)
+        if job_id in self._reports:
+            return self._reports[job_id]
+        norm_hyphen = job_id.replace("_", "-")
+        if norm_hyphen in self._reports:
+            return self._reports[norm_hyphen]
+        norm_under = job_id.replace("-", "_")
+        if norm_under in self._reports:
+            return self._reports[norm_under]
+        return None
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel an ongoing or queued audit job."""
@@ -170,6 +181,14 @@ class AuditService:
                 ]
                 if prod_files:
                     source_files = prod_files
+
+            # Only audit supported source code files (exclude unknown binary/media/markdown files)
+            supported_code_files = [
+                sf for sf in source_files
+                if sf.language != Language.UNKNOWN and getattr(sf, "status", None) != FileStatus.UNSUPPORTED
+            ]
+            if supported_code_files:
+                source_files = supported_code_files
 
             total_files = len(source_files)
             job.progress.total_files_count = total_files

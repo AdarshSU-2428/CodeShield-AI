@@ -61,6 +61,21 @@ scanner:
     - "*.exe"
     - "package-lock.json"
     - "yarn.lock"
+    - "*.png"
+    - "*.jpg"
+    - "*.jpeg"
+    - "*.gif"
+    - "*.ico"
+    - "*.svg"
+    - "*.webp"
+    - "*.pdf"
+    - "*.docx"
+    - "*.zip"
+    - "*.tar"
+    - "*.gz"
+    - "*.sqlite"
+    - "*.sqlite3"
+    - "*.db"
 
 
 rag:
@@ -74,8 +89,8 @@ rag:
 llm:
   default_provider: "groq"
   default_model: "openai/gpt-oss-20b"
-  fallback_model: "openai/gpt-oss-120b"
-  max_context_tokens: 1000
+  fallback_model: "qwen/qwen3.8-27b"
+  max_context_tokens: 4000
   fallback_max_tokens: 1000
   temperature: 0.1
 

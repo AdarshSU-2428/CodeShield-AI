@@ -117,11 +117,15 @@ class GroqLLMClient(LLMClient):
 
         while True:
             try:
+                eff_max_tokens = max_tokens
+                if "qwen" in model and eff_max_tokens > 1000:
+                    eff_max_tokens = 1000
+
                 call_kwargs = {
                     "model": model,
                     "messages": messages,
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
+                    "max_tokens": eff_max_tokens,
                 }
                 # Hide internal reasoning format for reasoning models so output tokens are reserved for JSON
                 if "gpt-oss" in model or "r1" in model or "deepseek" in model:
@@ -129,8 +133,14 @@ class GroqLLMClient(LLMClient):
 
                 return self._client.chat.completions.create(**call_kwargs)
             except RateLimitError as exc:
-                logger.warning(f"Rate limit exceeded on '{model}': {exc}. Triggering model failover.")
-                raise RuntimeError(f"Rate limit exceeded on '{model}': {exc}") from exc
+                attempts += 1
+                logger.warning(f"Rate limit exceeded on '{model}' (attempt {attempts}/{self._max_retries}): {exc}")
+                if attempts > self._max_retries:
+                    raise RuntimeError(
+                        f"Groq API call to '{model}' failed after {self._max_retries} retries: {exc}"
+                    ) from exc
+                time.sleep(current_delay)
+                current_delay *= 2.0
             except (APIConnectionError, TimeoutError, ConnectionError, OSError) as exc:
                 attempts += 1
                 logger.warning(
@@ -152,33 +162,42 @@ class GroqLLMClient(LLMClient):
         temperature: float,
         max_tokens: int,
     ) -> Any:
-        """Execute chat completion with automatic fallback model failover."""
-        try:
-            return self._call_groq_api(
-                model=self.model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-        except Exception as primary_error:
-            logger.warning(f"Primary model '{self.model_name}' failed: {primary_error}")
-            if self._fallback_model and self._fallback_model != self.model_name:
-                try:
-                    logger.info(f"Attempting failover to fallback model '{self._fallback_model}'...")
-                    return self._call_groq_api(
-                        model=self._fallback_model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=self._fallback_max_tokens,
-                    )
-                except Exception as fallback_error:
-                    logger.error(f"Fallback model '{self._fallback_model}' also failed: {fallback_error}")
-                    raise RuntimeError(
-                        f"Both primary model ('{self.model_name}') and fallback model "
-                        f"('{self._fallback_model}') failed. Primary error: {primary_error}. "
-                        f"Fallback error: {fallback_error}"
-                    ) from fallback_error
-            raise primary_error
+        """Execute chat completion with automatic fallback model failover across resilient models."""
+        candidate_models = [self.model_name]
+        if self._fallback_model and self._fallback_model not in candidate_models:
+            candidate_models.append(self._fallback_model)
+        for extra in ("qwen/qwen3.8-27b", "openai/gpt-oss-120b"):
+            if extra not in candidate_models:
+                candidate_models.append(extra)
+
+        last_error = None
+        for model in candidate_models:
+            try:
+                res = self._call_groq_api(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                if res is None:
+                    raise RuntimeError("Groq response is empty or malformed: None returned")
+                if not hasattr(res, "choices") or not isinstance(res.choices, list) or len(res.choices) == 0:
+                    raise RuntimeError("Groq response is empty or malformed: no choices")
+                choice = res.choices[0]
+                if choice is None or getattr(choice, "message", None) is None:
+                    # Choice exists but message is None (handled by caller)
+                    return res
+                content = (getattr(choice.message, "content", "") or "").strip()
+                if content:
+                    return res
+                logger.warning(f"Model '{model}' returned empty text in message content. Trying next fallback...")
+            except Exception as err:
+                logger.warning(f"Model '{model}' failed: {err}. Trying next fallback...")
+                last_error = err
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Groq response is empty or malformed")
 
     def chat(
         self,
