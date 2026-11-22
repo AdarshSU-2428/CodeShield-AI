@@ -127,10 +127,6 @@ cd "codeshield-ai"
 
 # Create and activate virtual environment
 python -m venv venv
-# Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-# Linux / macOS:
-source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
